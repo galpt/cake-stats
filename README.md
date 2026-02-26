@@ -24,17 +24,29 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 ### Desktop
 
 <p align="center">
-	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-desktop.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-desktop-001.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
 	<br/>
-	<em>UI for Desktop screens</em>
+	<em>UI for desktop screens</em>
+</p>
+
+<p align="center">
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-desktop-002.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<br/>
+	<em>Graphs for desktop screens</em>
 </p>
 
 ### Mobile
 
 <p align="center">
-	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-mobile.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-mobile-001.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
 	<br/>
-	<em>UI for Mobile screens</em>
+	<em>UI for mobile screens</em>
+</p>
+
+<p align="center">
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-mobile-002.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<br/>
+	<em>Graphs for mobile screens</em>
 </p>
 
 [&#8593; Back to Table of Contents](#table-of-contents)
@@ -49,8 +61,8 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 
 - Automatically discovers all CAKE qdiscs via `tc -s qdisc`
 - Parses every CAKE field: thresh, target, interval, pk\_delay, av\_delay, sp\_delay, backlog, pkts, bytes, way\_inds, way\_miss, way\_cols, drops, marks, ack\_drop, sp\_flows, bk\_flows, un\_flows, max\_len, quantum
-- Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `precedence`
-- Two-word tier names are joined correctly (e.g. "Best Effort", "CS1 Best" etc.)
+- Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `fwmark`
+- Two-word tier names are joined correctly (e.g. `"Best Effort"`)
 - Real-time push via **Server-Sent Events** — no WebSocket, no polling jitter
 - Single static binary — no runtime dependencies; runs on OpenWrt with ≈4 MB of RAM overhead
 - Web UI: dark TUI aesthetic (`#2D3C59` bg, JetBrains Mono, zero hover animations)
