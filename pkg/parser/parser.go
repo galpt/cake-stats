@@ -38,16 +38,11 @@ func supportsJSON() bool {
 }
 
 // CollectStats polls the kernel via `tc` and returns a slice of CakeStats.
-// It prefers JSON output and falls back to parsing the human-readable text.
+// Always uses the human-readable text output from `tc -s qdisc` for maximum
+// field coverage.  The JSON path (tc -j) is intentionally avoided because the
+// JSON tin representation omits many fields that the text output provides
+// (tier names, target, interval, delay values, per-tier packet counters, etc.).
 func CollectStats(ctx context.Context) ([]types.CakeStats, error) {
-	if supportsJSON() {
-		out, err := exec.CommandContext(ctx, "tc", "-j", "-s", "qdisc").Output()
-		if err == nil {
-			return parseJSON(out)
-		}
-		// if JSON invocation fails for any reason, fall back to text
-	}
-
 	out, err := exec.CommandContext(ctx, "tc", "-s", "qdisc").Output()
 	if err != nil {
 		return nil, fmt.Errorf("tc -s qdisc: %w", err)
