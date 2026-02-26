@@ -45,6 +45,7 @@ type CakeStats struct {
 	RTT          string `json:"rtt"`
 	Overhead     string `json:"overhead"`
 	DualMode     string `json:"dual_mode"`
+	FwmarkMask   string `json:"fwmark_mask"` // non-empty when fwmark MASK is present in header
 	NATEnabled   bool   `json:"nat_enabled"`
 	ATMEnabled   bool   `json:"atm_enabled"`
 	MemLimit     string `json:"memlimit"`
@@ -219,8 +220,14 @@ func parseHeader(cs *CakeStats, line string) {
 				cs.Bandwidth = fs[i+1]
 				i++
 			}
-		case "diffserv3", "diffserv4", "diffserv8", "besteffort", "fwmark":
+		case "diffserv3", "diffserv4", "diffserv8", "besteffort", "precedence":
 			cs.DiffservMode = tok
+		case "fwmark":
+			// fwmark is not a diffserv mode; it takes a bitmask argument.
+			if i+1 < len(fs) {
+				cs.FwmarkMask = fs[i+1]
+				i++
+			}
 		case "rtt":
 			if i+1 < len(fs) {
 				cs.RTT = fs[i+1]

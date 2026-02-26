@@ -61,7 +61,7 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 
 - Automatically discovers all CAKE qdiscs via `tc -s qdisc`
 - Parses every CAKE field: thresh, target, interval, pk\_delay, av\_delay, sp\_delay, backlog, pkts, bytes, way\_inds, way\_miss, way\_cols, drops, marks, ack\_drop, sp\_flows, bk\_flows, un\_flows, max\_len, quantum
-- Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `fwmark`
+- Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `precedence`; also parses the separate `fwmark MASK` tin-override parameter
 - Two-word tier names are joined correctly (e.g. `"Best Effort"`)
 - Real-time push via **Server-Sent Events** — no WebSocket, no polling jitter
 - Single static binary — no runtime dependencies; runs on OpenWrt with ≈4 MB of RAM overhead

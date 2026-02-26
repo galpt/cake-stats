@@ -153,6 +153,37 @@ func TestParseTCOutput_IngressStats(t *testing.T) {
 	assertUint(t, "marks", 117224, cs.Tiers[1].Marks)
 }
 
+func TestParseHeader_Precedence(t *testing.T) {
+	// precedence is a distinct diffserv mode (legacy TOS Precedence field).
+	raw := `qdisc cake 800d: dev eth2 root refcnt 2 bandwidth 20Mbit precedence rtt 100ms noatm overhead 0 memlimit 32Mb 
+ Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0`
+	stats := ParseTCOutput(raw)
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
+	}
+	cs := stats[0]
+	assertEqual(t, "diffserv_mode", "precedence", cs.DiffservMode)
+	assertEqual(t, "fwmark_mask", "", cs.FwmarkMask) // should not be set
+}
+
+func TestParseHeader_FwmarkMask(t *testing.T) {
+	// fwmark is a separate tin-override parameter, not a diffserv mode.
+	// It takes a bitmask argument and may appear alongside a diffserv keyword.
+	raw := `qdisc cake 800d: dev eth3 root refcnt 2 bandwidth 20Mbit diffserv4 fwmark 0xfc rtt 100ms noatm overhead 0 memlimit 32Mb 
+ Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0`
+	stats := ParseTCOutput(raw)
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
+	}
+	cs := stats[0]
+	// diffserv mode must be diffserv4, not "fwmark"
+	assertEqual(t, "diffserv_mode", "diffserv4", cs.DiffservMode)
+	// mask value must be captured separately
+	assertEqual(t, "fwmark_mask", "0xfc", cs.FwmarkMask)
+}
+
 func TestParseUint64_Safe(t *testing.T) {
 	cases := []struct {
 		in   string
