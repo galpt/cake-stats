@@ -55,6 +55,9 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 - Single static binary — no runtime dependencies; runs on OpenWrt with ≈4 MB of RAM overhead
 - Web UI: dark TUI aesthetic (`#2D3C59` bg, JetBrains Mono, zero hover animations)
 - Responsive for desktop and mobile (sticky first column, horizontal scroll on small screens)
+- Per-interface **live sparklines** (TX throughput, avg latency, drops/s) with current-value labels
+- Tap/click any sparkline bar to open a **full-screen history modal** with three uPlot time-series charts
+- Server-side ring buffer retains history across page reloads (configurable via `-history` flag)
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
@@ -91,6 +94,7 @@ Pre-built binaries for all common platforms are attached to every [GitHub Releas
 ./cake-stats                 # serves on http://0.0.0.0:11112
 ./cake-stats -port 8080      # custom port
 ./cake-stats -interval 2s    # poll tc every 2 seconds (default 1s)
+./cake-stats -history 3600   # retain 1 hour of history (default 300 = 5 min)
 ./cake-stats -host 127.0.0.1 # listen only on loopback
 ./cake-stats -version        # print version and exit
 ```
@@ -120,6 +124,7 @@ sh uninstall.sh --force      # no prompts
 |----------|-------------|
 | `GET /` | Web UI (HTML) |
 | `GET /api/stats` | Current stats snapshot (JSON) |
+| `GET /api/history` | Full ring-buffer history per interface (JSON), used to seed sparklines on page load |
 | `GET /events` | SSE stream — emits updated JSON on every poll interval |
 
 [&#8593; Back to Table of Contents](#table-of-contents)
@@ -131,12 +136,13 @@ sh uninstall.sh --force      # no prompts
 - **`uint64` for all counters**: avoids overflow for high-throughput links; max ~18.4 EB.
 - **`sync.RWMutex`**: a single reader/writer lock separates the poller goroutine from concurrent HTTP handlers.
 - **Delay fields as strings**: `pk_delay`, `av_delay`, `sp_delay` are kept as raw strings (e.g., `"6.73ms"`) so the unit suffix is preserved.
+- **Ring-buffer history**: `HistoryStore` allocates a fixed-size ring per interface at startup; memory is bounded by `capacity × interfaces × ~40 B` and never grows. Configurable via `-history N` (default 300 samples ≈ 5 min at 1 s interval).
+- **Sparklines**: pure SVG polylines drawn in-place inside stable DOM nodes so the per-second innerHTML swap of the stats table does not affect them. uPlot (CDN) is used only for the full-screen history modal.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Limitations & Next Steps
 
-- Historical graphing (sparklines) is not yet implemented — only current snapshot is shown.
 - No authentication; if exposing to the internet, put behind a reverse proxy with basic auth.
 - Windows/FreeBSD builds are provided but CAKE is a Linux-only qdisc.
 

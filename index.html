@@ -114,7 +114,7 @@
       if (n >= 1e9)  return (n / 1e9 ).toFixed(3) + ' GB';
       if (n >= 1e6)  return (n / 1e6 ).toFixed(3) + ' MB';
       if (n >= 1e3)  return (n / 1e3 ).toFixed(1) + ' KB';
-      return n + ' B';
+      return Math.round(n) + ' B';
     }
 
     /** Format an integer counter with comma grouping. */
@@ -213,28 +213,28 @@
         ' flex flex-wrap items-center gap-x-4 gap-y-1 cursor-pointer select-none"' +
         ' data-sparkbar="' + n + '">' +
         // TX throughput
-        '<div class="flex items-center gap-1.5">' +
+        '<div class="flex items-center gap-1.5 min-w-0">' +
           '<span class="text-[#6B8AB0] text-[10px] w-12 shrink-0">TX</span>' +
           '<svg id="spk-tx-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
               ' class="overflow-visible shrink-0"></svg>' +
           '<span id="spk-tx-val-' + n + '"' +
-              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0 truncate overflow-hidden"></span>' +
         '</div>' +
         // Avg latency
-        '<div class="flex items-center gap-1.5">' +
+        '<div class="flex items-center gap-1.5 min-w-0">' +
           '<span class="text-[#6B8AB0] text-[10px] w-14 shrink-0">LATENCY</span>' +
           '<svg id="spk-av-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
               ' class="overflow-visible shrink-0"></svg>' +
           '<span id="spk-av-val-' + n + '"' +
-              ' class="text-[#5B9BD5] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+              ' class="text-[#5B9BD5] text-[10px] w-20 tabular-nums text-right shrink-0 truncate overflow-hidden"></span>' +
         '</div>' +
         // Drops/s
-        '<div class="flex items-center gap-1.5">' +
+        '<div class="flex items-center gap-1.5 min-w-0">' +
           '<span class="text-[#6B8AB0] text-[10px] w-14 shrink-0">DROPS/s</span>' +
           '<svg id="spk-dr-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
               ' class="overflow-visible shrink-0"></svg>' +
           '<span id="spk-dr-val-' + n + '"' +
-              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0 truncate overflow-hidden"></span>' +
         '</div>' +
         '<span class="text-[#3D5070] text-[10px] ml-auto hidden sm:inline">' +
           'tap for full chart &#9658;</span>' +
