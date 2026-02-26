@@ -1,5 +1,5 @@
-# compiled binary in workspace root
-cake-stats
+# compiled binary in workspace root (anchored so it does not match cmd/cake-stats/)
+/cake-stats
 
 # command binary if built via cmd/
 /cmd/cake-stats/cake-stats

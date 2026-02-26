@@ -71,13 +71,6 @@ jobs:
 
       - name: Run tests
         run: go test -v ./...
-      - name: Verify build from cmd
-        run: |
-          if [ -d cmd/cake-stats ]; then
-            go build ./cmd/cake-stats
-          else
-            go build .
-          fi
 
       - name: Run vet
         run: go vet ./...
@@ -134,7 +127,7 @@ jobs:
           go build \
             -ldflags "-s -w -X main.Version=${TAG}" \
             -o "dist/cake-stats-${{ matrix.name }}${{ matrix.ext }}" \
-            $(if [ -d cmd/cake-stats ]; then echo ./cmd/cake-stats; else echo .; fi)
+            ./cmd/cake-stats
 
       - name: Archive
         run: |
