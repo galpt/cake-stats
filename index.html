@@ -352,6 +352,20 @@
             ticks:  { stroke: '#3D5070', width: 1 },
             font:   '11px JetBrains Mono, monospace',
             size:   60,
+            // Custom time formatter: show HH:MM at minute boundaries,
+            // "Xs" (e.g. "20s") for sub-minute ticks so users can't
+            // mistake seconds for minutes.
+            values: (u, splits) => splits.map(v => {
+              if (v == null) return '';
+              const d = new Date(v * 1000);
+              const s = d.getSeconds();
+              if (s === 0) {
+                return d.toLocaleTimeString([], {
+                  hour: '2-digit', minute: '2-digit', hour12: false,
+                });
+              }
+              return s + 's';
+            }),
           },
           {
             stroke: '#8AABCC',
