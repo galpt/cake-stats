@@ -107,12 +107,22 @@
         .replace(/"/g, '&quot;');
     }
 
-    /** Format byte counts with SI prefix. */
+    /** Format byte counts with SI prefix (full precision — used in sparkline labels). */
     function fmtBytes(n) {
       n = Number(n);
       if (n >= 1e12) return (n / 1e12).toFixed(3) + ' TB';
       if (n >= 1e9)  return (n / 1e9 ).toFixed(3) + ' GB';
       if (n >= 1e6)  return (n / 1e6 ).toFixed(3) + ' MB';
+      if (n >= 1e3)  return (n / 1e3 ).toFixed(1) + ' KB';
+      return Math.round(n) + ' B';
+    }
+
+    /** Compact byte formatter for uPlot y-axis tick labels (1 decimal max). */
+    function fmtBytesAxis(n) {
+      n = Number(n);
+      if (n >= 1e12) return (n / 1e12).toFixed(1) + ' TB';
+      if (n >= 1e9)  return (n / 1e9 ).toFixed(1) + ' GB';
+      if (n >= 1e6)  return (n / 1e6 ).toFixed(1) + ' MB';
       if (n >= 1e3)  return (n / 1e3 ).toFixed(1) + ' KB';
       return Math.round(n) + ' B';
     }
@@ -344,7 +354,7 @@
             grid:   { stroke: '#1E2D47', width: 1 },
             ticks:  { stroke: '#3D5070', width: 1 },
             font:   '11px JetBrains Mono, monospace',
-            size:   76,
+            size:   96,
             values: (u, ticks) => ticks.map(v => (v != null ? yFmt(v) : '')),
           },
         ],
@@ -382,7 +392,7 @@
       makeChart(cd, W, H, buf.t,
         [{ label: 'TX', data: buf.tx, stroke: '#4DB38A' }],
         'TX Throughput',
-        v => fmtBytes(v) + '/s');
+        v => fmtBytesAxis(v) + '/s');
 
       makeChart(cd, W, H, buf.t,
         [
