@@ -1,10 +1,10 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	_ "embed"
 	"encoding/json"
-	"net/http"
 	"sync"
 	"time"
 
@@ -151,45 +151,51 @@ func (s *Server) handleAPIHistory(c fiber.Ctx) error {
 }
 
 func (s *Server) handleSSE(c fiber.Ctx) error {
-	f := c.Response().BodyWriter()
-	ch := make(chan []byte, sseBufSize)
-
-	s.ssesMu.Lock()
-	s.clients[ch] = struct{}{}
-	s.ssesMu.Unlock()
-	defer func() {
-		s.ssesMu.Lock()
-		delete(s.clients, ch)
-		s.ssesMu.Unlock()
-	}()
-
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
 
+	ch := make(chan []byte, sseBufSize)
+
+	s.ssesMu.Lock()
+	s.clients[ch] = struct{}{}
+	s.ssesMu.Unlock()
+
+	// Capture initial snapshot before entering the stream writer.
 	s.statsMu.RLock()
 	snapshot := s.stats
 	s.statsMu.RUnlock()
-	if len(snapshot) > 0 {
-		resp := types.StatsResponse{Interfaces: snapshot, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-		if payload, err := resp.MarshalJSON(); err == nil {
-			f.Write(buildSSEEvent(payload))
-		}
-	}
 
-	ctx := c.Context()
-	for {
-		select {
-		case event := <-ch:
-			if _, err := f.Write(event); err != nil {
-				return err
+	c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer func() {
+			s.ssesMu.Lock()
+			delete(s.clients, ch)
+			s.ssesMu.Unlock()
+		}()
+
+		// Send the current snapshot immediately so the page isn't blank.
+		if len(snapshot) > 0 {
+			resp := types.StatsResponse{
+				Interfaces: snapshot,
+				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 			}
-			if fw, ok := f.(http.Flusher); ok {
-				fw.Flush()
+			if payload, err := resp.MarshalJSON(); err == nil {
+				if _, err = w.Write(buildSSEEvent(payload)); err != nil {
+					return
+				}
+				_ = w.Flush()
 			}
-		case <-ctx.Done():
-			return nil
 		}
-	}
+
+		for event := range ch {
+			if _, err := w.Write(event); err != nil {
+				return
+			}
+			if err := w.Flush(); err != nil {
+				return
+			}
+		}
+	})
+	return nil
 }
