@@ -68,7 +68,7 @@
        class="fixed inset-0 z-[200] flex items-center justify-center bg-black/80">
     <div class="relative bg-[#0F1B2D] border border-[#3D5070]
                 w-full max-w-4xl mx-2 my-4 flex flex-col"
-         style="max-height:92vh">
+         style="max-height:92vh;overflow-x:hidden">
       <!-- Modal header -->
       <div class="flex items-center justify-between px-4 py-2
                   border-b border-[#3D5070] shrink-0">
@@ -281,7 +281,13 @@
     // only triggered when the modal is first opened or the interface changes.
 
     let modalIface = null;
-    let modalPlots = [];   // { u: uPlot, seriesCount: number }
+    let modalPlots = [];        // { u: uPlot }
+    let modalResizeObserver = null;
+
+    /** Available chart width = container client width minus p-4 (16px) on each side. */
+    function _chartWidth(cd) {
+      return Math.max(200, (cd.clientWidth || 300) - 32);
+    }
 
     function openModal(name) {
       modalIface = name;
@@ -289,7 +295,7 @@
       if (titleEl) titleEl.textContent = name + '  \u00b7  history';
       document.getElementById('chart-modal').style.display = 'flex';
       _destroyModalPlots();
-      // Defer chart build so the modal is laid out and clientWidth is correct.
+      // Defer chart build so the modal is fully laid out and clientWidth is correct.
       requestAnimationFrame(() => _buildModalCharts(name));
     }
 
@@ -302,8 +308,16 @@
     }
 
     function _destroyModalPlots() {
+      if (modalResizeObserver) { modalResizeObserver.disconnect(); modalResizeObserver = null; }
       modalPlots.forEach(p => { try { p.u.destroy(); } catch (_) {} });
       modalPlots = [];
+    }
+
+    function _resizeModalPlots() {
+      const cd = document.getElementById('modal-charts');
+      if (!cd) return;
+      const w = _chartWidth(cd);
+      modalPlots.forEach(p => { try { p.u.setSize({ width: w, height: p.u.height }); } catch (_) {} });
     }
 
     function isUPlotReady() {
@@ -406,8 +420,15 @@
       }
 
       cd.innerHTML = '';
-      const W = Math.max(240, (cd.clientWidth || 320) - 16);
+      const W = _chartWidth(cd);
       const H = 120;
+
+      // Observe container width changes (orientation flip, keyboard, etc.) and
+      // resize all uPlot instances to match so no horizontal scroll appears.
+      if (typeof ResizeObserver !== 'undefined') {
+        modalResizeObserver = new ResizeObserver(() => _resizeModalPlots());
+        modalResizeObserver.observe(cd);
+      }
 
       modalPlots.push({ u: makeChart(cd, W, H, buf.t,
         [{ label: 'TX', data: buf.tx, stroke: '#4DB38A' }],
