@@ -614,9 +614,26 @@
           else appEl.appendChild(card);
         }
 
-        // Refresh stats content
+        // Refresh stats content — preserve horizontal scroll positions so that
+        // mobile/desktop users who have scrolled a tier table are not snapped
+        // back to the left edge on every poll cycle.
         const content = card.querySelector('.iface-content');
-        if (content) content.innerHTML = buildIfaceHTML(cs);
+        if (content) {
+          // Snapshot scrollLeft for every horizontal-scroll container.
+          const scrollStates = [];
+          content.querySelectorAll('.overflow-x-auto').forEach(el => {
+            scrollStates.push(el.scrollLeft);
+          });
+
+          content.innerHTML = buildIfaceHTML(cs);
+
+          // Reapply saved scroll positions (order is deterministic — same HTML
+          // structure is always emitted by buildIfaceHTML / buildTierTable).
+          let si = 0;
+          content.querySelectorAll('.overflow-x-auto').forEach(el => {
+            if (si < scrollStates.length) el.scrollLeft = scrollStates[si++];
+          });
+        }
 
         // Push to history and redraw sparklines
         pushSample(cs.interface, {
