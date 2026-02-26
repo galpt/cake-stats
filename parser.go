@@ -145,7 +145,6 @@ func parseCakeBlock(lines []string) (CakeStats, bool) {
 
 	var tierNames []string
 	tierFieldBuf := map[string][]string{}
-	tierOrder := []string{}
 	inTable := false
 
 	for i := 1; i < len(lines); i++ {
@@ -187,23 +186,12 @@ func parseCakeBlock(lines []string) (CakeStats, bool) {
 			inTable = true
 
 		case inTable && len(fields) >= 2 && unicode.IsLower(rune(fields[0][0])):
-			name := fields[0]
-			tierFieldBuf[name] = fields[1:]
-			seen := false
-			for _, n := range tierOrder {
-				if n == name {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				tierOrder = append(tierOrder, name)
-			}
+			tierFieldBuf[fields[0]] = fields[1:]
 		}
 	}
 
 	if len(tierNames) > 0 {
-		cs.Tiers = assembleTiers(tierNames, tierOrder, tierFieldBuf)
+		cs.Tiers = assembleTiers(tierNames, tierFieldBuf)
 	}
 	return cs, true
 }
@@ -346,7 +334,7 @@ func parseTierNames(words []string) []string {
 }
 
 // assembleTiers builds a CakeTier slice from the collected field->values map.
-func assembleTiers(names, order []string, buf map[string][]string) []CakeTier {
+func assembleTiers(names []string, buf map[string][]string) []CakeTier {
 	tiers := make([]CakeTier, len(names))
 	for i, name := range names {
 		tiers[i].Name = name
