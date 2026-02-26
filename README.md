@@ -95,7 +95,7 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 - **Polling strategy**: defaults to 100 ms for near-instant updates; interval is command-line configurable.  The codebase contains scaffolding and a placeholder comment for an optional rtnetlink-based watcher, but the current release still relies on regular `tc` invocations.
 - **Server-Sent Events**: statistics are broadcast over SSE.  A pool of reusable message buffers reduces allocations when many clients connect.
 - **Fiber & zerolog**: Fiber v3 provides a lightweight HTTP server with built‑in recovery middleware; zerolog supplies compact, structured log output.
-- **Single static binary**: the project builds to one statically-linked executable, suitable for OpenWrt.  Cross-compilation is trivial and results in ≈4 MB RAM usage.
+- **Single static binary**: the project builds to one statically-linked executable, suitable for OpenWrt.
 - **Testing and documentation**: parser and history packages include unit tests and benchmarks.  Dependencies are kept to a minimum to ease audits.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
