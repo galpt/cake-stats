@@ -136,7 +136,7 @@ download_binary() {
         exit 1
     }
 
-    install -m 755 "${tmp_dir}/${name}" "$BINARY_PATH" || {
+    cp "${tmp_dir}/${name}" "$BINARY_PATH" && chmod 755 "$BINARY_PATH" || {
         log_error "Failed to install binary to $BINARY_PATH"
         exit 1
     }
