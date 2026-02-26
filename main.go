@@ -1,8 +1,8 @@
 package main
 
 import (
-	_ "embed"
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -26,6 +26,7 @@ func main() {
 		host     = flag.String("host", "0.0.0.0", "Bind address for the web interface")
 		port     = flag.Int("port", 11112, "TCP port for the web interface")
 		interval = flag.Duration("interval", time.Second, "How often to poll 'tc -s qdisc'")
+		histCap  = flag.Int("history", 300, "Samples to retain per interface (300 = 5 min at 1 s interval)")
 		showVer  = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Usage = func() {
@@ -50,7 +51,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := NewServer(addr, *interval)
+	srv := NewServer(addr, *interval, *histCap)
 	if err := srv.Run(ctx); err != nil {
 		log.Fatalf("fatal: %v", err)
 	}

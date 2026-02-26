@@ -8,6 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
         rel="stylesheet" />
+  <!-- uPlot — tiny, fast time-series charting library (used in the history modal) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css" />
   <style type="text/tailwindcss">
     @theme {
       --font-mono: "JetBrains Mono", "Courier New", monospace;
@@ -28,6 +30,12 @@
     .scroll-thin::-webkit-scrollbar { height: 4px; }
     .scroll-thin::-webkit-scrollbar-track { background: #1E2D47; }
     .scroll-thin::-webkit-scrollbar-thumb { background: #3D5070; border-radius: 2px; }
+    /* Sparkline bar — make the clickable area obvious */
+    .sparkline-bar:hover { background: #162238 !important; }
+    /* uPlot dark theme overrides */
+    .u-wrap { background: #0F1B2D !important; }
+    .u-legend { color: #8AABCC !important; font-size: 11px !important; }
+    .u-legend td, .u-legend th { padding: 2px 6px !important; }
   </style>
 </head>
 
@@ -54,7 +62,28 @@
     <p id="msg" class="text-[#6B8AB0] text-center py-12">Waiting for data…</p>
   </main>
 
+  <!-- ═══ History modal ════════════════════════════════════════════════════ -->
+  <!-- Clicking the outer fixed overlay (outside the panel) closes the modal. -->
+  <div id="chart-modal" style="display:none"
+       class="fixed inset-0 z-[200] flex items-center justify-center bg-black/80">
+    <div class="relative bg-[#0F1B2D] border border-[#3D5070]
+                w-full max-w-4xl mx-2 my-4 flex flex-col"
+         style="max-height:92vh">
+      <!-- Modal header -->
+      <div class="flex items-center justify-between px-4 py-2
+                  border-b border-[#3D5070] shrink-0">
+        <span id="modal-title" class="font-bold text-[#5B9BD5] text-sm"></span>
+        <button id="modal-close"
+                class="text-[#6B8AB0] px-2 py-1 text-lg leading-none"
+                aria-label="Close">&#x2715;</button>
+      </div>
+      <!-- Chart area -->
+      <div id="modal-charts" class="overflow-y-auto p-4 space-y-2 flex-1"></div>
+    </div>
+  </div>
+
   <!-- ═══ JavaScript ════════════════════════════════════════════════════════ -->
+  <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
   <script>
   (function () {
     'use strict';
@@ -78,8 +107,7 @@
         .replace(/"/g, '&quot;');
     }
 
-    /** Format byte counts with SI prefix. Inputs are uint64 (JS number safe
-     *  up to 2^53 ≈ 9 PB, which covers any realistic counter). */
+    /** Format byte counts with SI prefix. */
     function fmtBytes(n) {
       n = Number(n);
       if (n >= 1e12) return (n / 1e12).toFixed(3) + ' TB';
@@ -108,19 +136,297 @@
       } catch (_) { return iso || '--'; }
     }
 
+    // ── History buffer (client-side ring) ─────────────────────────────────
+    // Keyed by interface name; each entry holds five parallel arrays.
+    // On page load we seed from /api/history; thereafter SSE events extend it.
+
+    const HIST_CAP = 300; // samples per interface  (~5 min at 1 s interval)
+    const histBuf  = {};  // { [iface]: { t, tx, av, pk, dr } }
+
+    function getBuf(name) {
+      if (!histBuf[name]) histBuf[name] = { t: [], tx: [], av: [], pk: [], dr: [] };
+      return histBuf[name];
+    }
+
+    function pushSample(name, s) {
+      const b = getBuf(name);
+      const keys = ['t', 'tx', 'av', 'pk', 'dr'];
+      keys.forEach(k => {
+        b[k].push(s[k] || 0);
+        if (b[k].length > HIST_CAP) b[k].shift();
+      });
+    }
+
+    async function seedHistory() {
+      try {
+        const r = await fetch('/api/history');
+        if (!r.ok) return;
+        const data = await r.json();
+        Object.entries(data).forEach(([name, samples]) => {
+          const b = getBuf(name);
+          samples.forEach(s => {
+            b.t.push(s.t   || 0);
+            b.tx.push(s.tx || 0);
+            b.av.push(s.av || 0);
+            b.pk.push(s.pk || 0);
+            b.dr.push(s.dr || 0);
+          });
+          // Trim to cap in case server buffer is larger.
+          ['t', 'tx', 'av', 'pk', 'dr'].forEach(k => {
+            if (b[k].length > HIST_CAP) b[k] = b[k].slice(-HIST_CAP);
+          });
+          redrawSparklines(name);
+        });
+      } catch (e) {
+        console.warn('[cake-stats] history seed failed', e);
+      }
+    }
+
+    // ── Sparklines ────────────────────────────────────────────────────────
+
+    /**
+     * Render data as a pure-SVG polyline into svg (an <svg> element).
+     * The viewBox is 100x28; path is normalised to fill height.
+     */
+    function drawSparkline(svg, data, color) {
+      if (!svg) return;
+      if (!data || data.length < 2) { svg.innerHTML = ''; return; }
+      const W = 100, H = 28, PAD = 2;
+      let min = Infinity, max = -Infinity;
+      for (const v of data) { if (v < min) min = v; if (v > max) max = v; }
+      const range = max - min || 1;
+      const pts = data.map((v, i) => {
+        const x = PAD + (i / (data.length - 1)) * (W - 2 * PAD);
+        const y = H - PAD - ((v - min) / range) * (H - 2 * PAD);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      svg.innerHTML =
+        '<polyline points="' + pts + '" fill="none" stroke="' + color +
+        '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>';
+    }
+
+    /** Return the stable sparkline bar HTML string for one interface. */
+    function buildSparkbarHTML(name) {
+      const n = h(name);
+      return (
+        '<div class="sparkline-bar px-4 py-2 border-b border-[#3D5070]' +
+        ' flex flex-wrap items-center gap-x-4 gap-y-1 cursor-pointer select-none"' +
+        ' data-sparkbar="' + n + '">' +
+        // TX throughput
+        '<div class="flex items-center gap-1.5">' +
+          '<span class="text-[#6B8AB0] text-[10px] w-12 shrink-0">TX</span>' +
+          '<svg id="spk-tx-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
+              ' class="overflow-visible shrink-0"></svg>' +
+          '<span id="spk-tx-val-' + n + '"' +
+              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+        '</div>' +
+        // Avg latency
+        '<div class="flex items-center gap-1.5">' +
+          '<span class="text-[#6B8AB0] text-[10px] w-14 shrink-0">LATENCY</span>' +
+          '<svg id="spk-av-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
+              ' class="overflow-visible shrink-0"></svg>' +
+          '<span id="spk-av-val-' + n + '"' +
+              ' class="text-[#5B9BD5] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+        '</div>' +
+        // Drops/s
+        '<div class="flex items-center gap-1.5">' +
+          '<span class="text-[#6B8AB0] text-[10px] w-14 shrink-0">DROPS/s</span>' +
+          '<svg id="spk-dr-' + n + '" width="100" height="28" viewBox="0 0 100 28"' +
+              ' class="overflow-visible shrink-0"></svg>' +
+          '<span id="spk-dr-val-' + n + '"' +
+              ' class="text-[#4DB38A] text-[10px] w-20 tabular-nums text-right shrink-0"></span>' +
+        '</div>' +
+        '<span class="text-[#3D5070] text-[10px] ml-auto hidden sm:inline">' +
+          'tap for full chart &#9658;</span>' +
+        '</div>'
+      );
+    }
+
+    /** Redraw all three sparklines for an interface and update current-value labels. */
+    function redrawSparklines(name) {
+      const buf = histBuf[name];
+      if (!buf) return;
+
+      const lastTx = buf.tx[buf.tx.length - 1] || 0;
+      const lastAv = buf.av[buf.av.length - 1] || 0;
+      const lastDr = buf.dr[buf.dr.length - 1] || 0;
+
+      drawSparkline(document.getElementById('spk-tx-' + name), buf.tx, '#4DB38A');
+      drawSparkline(document.getElementById('spk-av-' + name), buf.av, '#5B9BD5');
+      drawSparkline(
+        document.getElementById('spk-dr-' + name),
+        buf.dr,
+        lastDr > 0 ? '#E07070' : '#4DB38A',
+      );
+
+      const txEl = document.getElementById('spk-tx-val-' + name);
+      const avEl = document.getElementById('spk-av-val-' + name);
+      const drEl = document.getElementById('spk-dr-val-' + name);
+
+      if (txEl) txEl.textContent = fmtBytes(lastTx) + '/s';
+      if (avEl) avEl.textContent = lastAv.toFixed(2) + ' ms';
+      if (drEl) {
+        drEl.textContent = lastDr.toFixed(2) + '/s';
+        drEl.className   =
+          'text-[10px] w-20 tabular-nums text-right shrink-0 ' +
+          (lastDr > 0 ? 'text-[#E07070]' : 'text-[#4DB38A]');
+      }
+    }
+
+    // ── Modal with uPlot full charts ──────────────────────────────────────
+
+    let modalIface = null;
+
+    function openModal(name) {
+      modalIface = name;
+      const titleEl = document.getElementById('modal-title');
+      if (titleEl) titleEl.textContent = name + '  \u00b7  history';
+      document.getElementById('chart-modal').style.display = 'flex';
+      // Defer chart build so the modal is laid out and clientWidth is correct.
+      requestAnimationFrame(() => rebuildModalCharts(name));
+    }
+
+    function closeModal() {
+      modalIface = null;
+      document.getElementById('chart-modal').style.display = 'none';
+      const cd = document.getElementById('modal-charts');
+      if (cd) cd.innerHTML = '';
+    }
+
+    function isUPlotReady() {
+      return typeof uPlot !== 'undefined';
+    }
+
+    /**
+     * Build one uPlot chart inside container.
+     * series: [{ label, data, stroke }]
+     * yFmt:   value => display string for y-axis labels
+     */
+    function makeChart(container, W, H, times, series, title, yFmt) {
+      const wrap = document.createElement('div');
+      wrap.className = 'mb-3';
+
+      const lbl = document.createElement('div');
+      lbl.className = 'text-[10px] text-[#6B8AB0] mb-1 uppercase tracking-widest';
+      lbl.textContent = title;
+      wrap.appendChild(lbl);
+
+      const chartWrap = document.createElement('div');
+      chartWrap.style.background = '#0F1B2D';
+      wrap.appendChild(chartWrap);
+      container.appendChild(wrap);
+
+      const opts = {
+        width:  W,
+        height: H,
+        cursor: { show: false },
+        select: { show: false },
+        legend: { show: series.length > 1, live: false },
+        series: [
+          {},   // x — timestamps
+          ...series.map(s => ({
+            label:    s.label,
+            stroke:   s.stroke,
+            width:    1.5,
+            spanGaps: true,
+          })),
+        ],
+        axes: [
+          {
+            stroke: '#8AABCC',
+            grid:   { stroke: '#1E2D47', width: 1 },
+            ticks:  { stroke: '#3D5070', width: 1 },
+            font:   '11px JetBrains Mono, monospace',
+            size:   40,
+          },
+          {
+            stroke: '#8AABCC',
+            grid:   { stroke: '#1E2D47', width: 1 },
+            ticks:  { stroke: '#3D5070', width: 1 },
+            font:   '11px JetBrains Mono, monospace',
+            size:   76,
+            values: (u, ticks) => ticks.map(v => (v != null ? yFmt(v) : '')),
+          },
+        ],
+        scales: { x: { time: true }, y: { auto: true } },
+      };
+
+      const data = [times, ...series.map(s => s.data)];
+      new uPlot(opts, data, chartWrap);
+    }
+
+    /** Wipe and rebuild all three charts for the modal's current interface. */
+    function rebuildModalCharts(name) {
+      const cd = document.getElementById('modal-charts');
+      if (!cd || !modalIface) return;
+
+      const buf = histBuf[name];
+      if (!buf || buf.t.length < 2) {
+        cd.innerHTML =
+          '<p class="text-[#6B8AB0] text-center py-8 text-sm">' +
+          'Not enough history yet \u2014 wait a few seconds.</p>';
+        return;
+      }
+
+      if (!isUPlotReady()) {
+        cd.innerHTML =
+          '<p class="text-[#6B8AB0] text-center py-8 text-sm">' +
+          'Chart library not loaded \u2014 check internet access.</p>';
+        return;
+      }
+
+      cd.innerHTML = '';
+      const W = Math.max(240, (cd.clientWidth || 320) - 16);
+      const H = 120;
+
+      makeChart(cd, W, H, buf.t,
+        [{ label: 'TX', data: buf.tx, stroke: '#4DB38A' }],
+        'TX Throughput',
+        v => fmtBytes(v) + '/s');
+
+      makeChart(cd, W, H, buf.t,
+        [
+          { label: 'avg latency', data: buf.av, stroke: '#5B9BD5' },
+          { label: 'peak latency', data: buf.pk, stroke: '#E07070' },
+        ],
+        'Latency (ms)',
+        v => v.toFixed(2) + ' ms');
+
+      makeChart(cd, W, H, buf.t,
+        [{ label: 'drops/s', data: buf.dr, stroke: '#E07070' }],
+        'Drops / sec',
+        v => v.toFixed(2));
+    }
+
+    // ── Event delegation (sparkbar tap + modal close) ─────────────────────
+
+    document.addEventListener('click', function (e) {
+      // Sparkline bar → open modal
+      const bar = e.target.closest('[data-sparkbar]');
+      if (bar) { openModal(bar.dataset.sparkbar); return; }
+
+      // Close button
+      if (e.target.id === 'modal-close') { closeModal(); return; }
+
+      // Click on the backdrop (the inner absolute div that covers inset-0)
+      if (e.target.id === 'chart-modal') { closeModal(); return; }
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeModal();
+    });
+
     // ── Tier-table field groups ───────────────────────────────────────────
-    // Each entry: [group_label, [[field_key, display_label, formatter(tier)]]]
-    // Formatters return HTML strings.
     const FIELD_GROUPS = [
       ['Shaping', [
-        ['thresh',   'thresh',    t => h(t.thresh   || '–')],
-        ['target',   'target',    t => h(t.target   || '–')],
-        ['interval', 'interval',  t => h(t.interval || '–')],
+        ['thresh',   'thresh',    t => h(t.thresh   || '\u2013')],
+        ['target',   'target',    t => h(t.target   || '\u2013')],
+        ['interval', 'interval',  t => h(t.interval || '\u2013')],
       ]],
       ['Latency', [
-        ['pk_delay', 'pk_delay',  t => h(t.pk_delay || '–')],
-        ['av_delay', 'av_delay',  t => h(t.av_delay || '–')],
-        ['sp_delay', 'sp_delay',  t => h(t.sp_delay || '–')],
+        ['pk_delay', 'pk_delay',  t => h(t.pk_delay || '\u2013')],
+        ['av_delay', 'av_delay',  t => h(t.av_delay || '\u2013')],
+        ['sp_delay', 'sp_delay',  t => h(t.sp_delay || '\u2013')],
       ]],
       ['Queue', [
         ['backlog',  'backlog',   t => h(t.backlog  || '0b')],
@@ -153,13 +459,12 @@
     function buildTierTable(tiers) {
       if (!tiers || tiers.length === 0) return '';
       const cols = tiers.length;
-      // Sanity: cap minimum width so the field label column has room.
       const minW = 160 + cols * 120;
 
       let rows = '';
       FIELD_GROUPS.forEach(([groupLabel, fields]) => {
         fields.forEach(([, label, fmt], fi) => {
-          const isFirst = fi === 0;
+          const isFirst   = fi === 0;
           const topBorder = isFirst ? 'border-t-2 border-t-[#5B9BD5]' : '';
           const groupTag  = isFirst
             ? `<span class="block text-[10px] text-[#5B9BD5] leading-tight mb-0.5">${h(groupLabel)}</span>`
@@ -201,10 +506,9 @@
     }
 
     function buildIfaceHTML(cs) {
-      const dir      = cs.direction === 'ingress' ? 'INGRESS' : 'EGRESS';
-      const dirCls   = cs.direction === 'ingress' ? 'text-[#5B9BD5]' : 'text-[#4DB38A]';
+      const dir    = cs.direction === 'ingress' ? 'INGRESS' : 'EGRESS';
+      const dirCls = cs.direction === 'ingress' ? 'text-[#5B9BD5]' : 'text-[#4DB38A]';
 
-      // Header row with interface metadata
       const metaParts = [
         cs.bandwidth     && `<span class="text-[#6B8AB0]">bw</span> <span>${h(cs.bandwidth)}</span>`,
         cs.diffserv_mode && `<span class="text-[#6B8AB0]">mode</span> <span>${h(cs.diffserv_mode)}</span>`,
@@ -214,9 +518,8 @@
         cs.nat_enabled   && `<span>nat</span>`,
         cs.atm_enabled   && `<span>atm</span>`,
         cs.memlimit      && `<span class="text-[#6B8AB0]">memlimit</span> <span>${h(cs.memlimit)}</span>`,
-      ].filter(Boolean).join('<span class="text-[#3D5070] mx-1">·</span>');
+      ].filter(Boolean).join('<span class="text-[#3D5070] mx-1">\u00b7</span>');
 
-      // Global stats grid — two helper partials
       const statBox = (label, val, cls = '') =>
         `<div><span class="text-[#6B8AB0]">${label} </span><span class="${cls || 'text-white'}">${val}</span></div>`;
 
@@ -231,8 +534,8 @@
           ${statBox('backlog',    h(cs.backlog_bytes || '0b') + ' / ' + fmtNum(cs.backlog_pkts) + 'p')}
           ${cs.memory_used     ? statBox('memory', h(cs.memory_used) + '<span class="text-[#6B8AB0]"> of </span>' + h(cs.memory_total)) : ''}
           ${cs.capacity_estimate ? statBox('capacity', h(cs.capacity_estimate)) : ''}
-          ${cs.min_net_size    ? statBox('net size', h(cs.min_net_size) + '<span class="text-[#6B8AB0]"> – </span>' + h(cs.max_net_size)) : ''}
-          ${cs.min_adj_size    ? statBox('adj size', h(cs.min_adj_size) + '<span class="text-[#6B8AB0]"> – </span>' + h(cs.max_adj_size)) : ''}
+          ${cs.min_net_size    ? statBox('net size', h(cs.min_net_size) + '<span class="text-[#6B8AB0]"> \u2013 </span>' + h(cs.max_net_size)) : ''}
+          ${cs.min_adj_size    ? statBox('adj size', h(cs.min_adj_size) + '<span class="text-[#6B8AB0]"> \u2013 </span>' + h(cs.max_adj_size)) : ''}
           ${cs.avg_hdr_offset  ? statBox('hdr offset', h(cs.avg_hdr_offset)) : ''}
         </div>`;
 
@@ -248,14 +551,16 @@
     }
 
     // ── DOM update strategy ───────────────────────────────────────────────
-    // Each interface gets a stable <div id="iface-<name>"> so we can do
-    // cheap in-place innerHTML swaps without re-creating the whole document.
+    // Each interface card has two children:
+    //   [0] sparkbar  — created once, never replaced (holds live SVG sparklines)
+    //   [1] .iface-content — innerHTML swapped every poll cycle
 
-    /** Set of currently rendered interface div IDs. */
     let rendered = new Set();
 
     function handleData(payload) {
       const ifaces = Array.isArray(payload.interfaces) ? payload.interfaces : [];
+      const t      = Math.round(Date.parse(payload.updated_at) / 1000) ||
+                     Math.round(Date.now() / 1000);
 
       // Update header bar
       ifaceCountEl.textContent = ifaces.length === 1
@@ -283,29 +588,49 @@
         }
       });
 
-      // Create or update cards, preserving document order
+      // Create or update cards
       ifaces.forEach((cs, idx) => {
         const divId = 'iface-' + cs.interface;
         let card = document.getElementById(divId);
 
         if (!card) {
           card = document.createElement('div');
-          card.id    = divId;
+          card.id        = divId;
           card.className = 'bg-[#1E2D47] border border-[#3D5070] overflow-hidden';
           rendered.add(divId);
 
-          // Insert at the correct index (after the msg paragraph)
-          const sibling = appEl.children[idx + 1]; // +1 because msgEl is index 0
-          if (sibling) {
-            appEl.insertBefore(card, sibling);
-          } else {
-            appEl.appendChild(card);
-          }
+          // ── Sparkbar: created once, stable ──────────────────────────
+          const tmp = document.createElement('div');
+          tmp.innerHTML = buildSparkbarHTML(cs.interface);
+          card.appendChild(tmp.firstElementChild);
+
+          // ── Content: replaced every poll ─────────────────────────────
+          const content = document.createElement('div');
+          content.className = 'iface-content';
+          card.appendChild(content);
+
+          const sibling = appEl.children[idx + 1]; // +1 for msgEl at index 0
+          if (sibling) appEl.insertBefore(card, sibling);
+          else appEl.appendChild(card);
         }
 
-        // Always refresh inner HTML to reflect the latest data
-        card.innerHTML = buildIfaceHTML(cs);
+        // Refresh stats content
+        const content = card.querySelector('.iface-content');
+        if (content) content.innerHTML = buildIfaceHTML(cs);
+
+        // Push to history and redraw sparklines
+        pushSample(cs.interface, {
+          t,
+          tx: cs.tx_bytes_per_s  || 0,
+          av: cs.max_av_delay_ms || 0,
+          pk: cs.max_pk_delay_ms || 0,
+          dr: cs.drops_per_s     || 0,
+        });
+        redrawSparklines(cs.interface);
       });
+
+      // Keep modal charts up-to-date while it's open
+      if (modalIface) rebuildModalCharts(modalIface);
     }
 
     // ── SSE connection ────────────────────────────────────────────────────
@@ -334,7 +659,10 @@
       };
     }
 
+    // ── Boot ──────────────────────────────────────────────────────────────
+    seedHistory(); // seed sparklines from server ring buffer before first SSE
     connect();
+
   }());
   </script>
 </body>

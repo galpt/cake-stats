@@ -12,11 +12,12 @@ import (
 
 // ─────────────────────────── Server ────────────────────────────────────────
 
-// Server holds the HTTP mux, the latest parsed stats snapshot, and an SSE
-// client registry.  All fields that cross goroutine boundaries are protected.
+// Server holds the HTTP mux, the latest parsed stats snapshot, an SSE
+// client registry, and the historical time-series store.
+// All fields that cross goroutine boundaries are protected.
 type Server struct {
-	mux      *http.ServeMux
-	httpSrv  *http.Server
+	mux     *http.ServeMux
+	httpSrv *http.Server
 
 	// Latest snapshot — guarded by mu
 	mu    sync.RWMutex
@@ -27,18 +28,25 @@ type Server struct {
 	clients map[chan []byte]struct{}
 
 	pollInterval time.Duration
+
+	// Historical ring-buffer store — safe for concurrent reads via Snapshot().
+	history *HistoryStore
 }
 
-// NewServer constructs a Server that will serve on addr and poll tc every interval.
-func NewServer(addr string, interval time.Duration) *Server {
+// NewServer constructs a Server that will serve on addr and poll tc every
+// interval.  histCap controls how many samples per interface the history
+// ring buffer retains (e.g. 300 = 5 min at 1 s interval).
+func NewServer(addr string, interval time.Duration, histCap int) *Server {
 	s := &Server{
 		mux:          http.NewServeMux(),
 		clients:      make(map[chan []byte]struct{}),
 		pollInterval: interval,
+		history:      NewHistoryStore(histCap),
 	}
 
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/stats", s.handleAPIStats)
+	s.mux.HandleFunc("/api/history", s.handleAPIHistory)
 	s.mux.HandleFunc("/events", s.handleSSE)
 
 	s.httpSrv = &http.Server{
@@ -103,6 +111,10 @@ func (s *Server) poll() {
 	}
 
 	parsed := ParseTCOutput(raw)
+
+	// Record computes delta fields (TxBytesPerS, etc.) in-place and appends
+	// to the ring buffers — must happen before we store/broadcast.
+	s.history.Record(parsed, s.pollInterval)
 
 	s.mu.Lock()
 	s.stats = parsed
@@ -229,4 +241,15 @@ func (s *Server) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		"interfaces": snapshot,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// handleAPIHistory returns the full ring-buffer history for all interfaces
+// as a JSON object keyed by interface name.  Used by the web UI on first load
+// to seed client-side sparklines and charts.
+func (s *Server) handleAPIHistory(w http.ResponseWriter, r *http.Request) {
+	snap := s.history.Snapshot()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(snap)
 }

@@ -71,6 +71,13 @@ type CakeStats struct {
 
 	Tiers     []CakeTier `json:"tiers"`
 	UpdatedAt time.Time  `json:"updated_at"`
+
+	// Computed per-poll by HistoryStore.Record — not parsed from tc output.
+	// Zero on the first poll (no previous sample to diff against).
+	TxBytesPerS  float64 `json:"tx_bytes_per_s"`
+	DropsPerS    float64 `json:"drops_per_s"`
+	MaxAvDelayMs float64 `json:"max_av_delay_ms"`
+	MaxPkDelayMs float64 `json:"max_pk_delay_ms"`
 }
 
 // runTC executes "tc -s qdisc" and returns stdout.
@@ -358,26 +365,26 @@ func assembleTiers(names, order []string, buf map[string][]string) []CakeTier {
 
 	for i := range tiers {
 		t := &tiers[i]
-		t.Thresh   = get("thresh", i)
-		t.Target   = get("target", i)
+		t.Thresh = get("thresh", i)
+		t.Target = get("target", i)
 		t.Interval = get("interval", i)
-		t.PkDelay  = get("pk_delay", i)
-		t.AvDelay  = get("av_delay", i)
-		t.SpDelay  = get("sp_delay", i)
-		t.Backlog  = get("backlog", i)
-		t.Pkts     = getU("pkts", i)
-		t.Bytes    = getU("bytes", i)
-		t.WayInds  = getU("way_inds", i)
-		t.WayMiss  = getU("way_miss", i)
-		t.WayCols  = getU("way_cols", i)
-		t.Drops    = getU("drops", i)
-		t.Marks    = getU("marks", i)
-		t.AckDrop  = getU("ack_drop", i)
-		t.SpFlows  = getU("sp_flows", i)
-		t.BkFlows  = getU("bk_flows", i)
-		t.UnFlows  = getU("un_flows", i)
-		t.MaxLen   = getU("max_len", i)
-		t.Quantum  = getU("quantum", i)
+		t.PkDelay = get("pk_delay", i)
+		t.AvDelay = get("av_delay", i)
+		t.SpDelay = get("sp_delay", i)
+		t.Backlog = get("backlog", i)
+		t.Pkts = getU("pkts", i)
+		t.Bytes = getU("bytes", i)
+		t.WayInds = getU("way_inds", i)
+		t.WayMiss = getU("way_miss", i)
+		t.WayCols = getU("way_cols", i)
+		t.Drops = getU("drops", i)
+		t.Marks = getU("marks", i)
+		t.AckDrop = getU("ack_drop", i)
+		t.SpFlows = getU("sp_flows", i)
+		t.BkFlows = getU("bk_flows", i)
+		t.UnFlows = getU("un_flows", i)
+		t.MaxLen = getU("max_len", i)
+		t.Quantum = getU("quantum", i)
 	}
 	return tiers
 }
