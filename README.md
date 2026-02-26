@@ -4,7 +4,11 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 
 ---
 
+<a name="table-of-contents"></a>
 ## Table of Contents
+- [How it looks like](#how-it-looks-like)
+  - [Desktop](#desktop)
+  - [Mobile](#mobile)
 - [Status](#status)
 - [Features](#features)
 - [Requirements](#requirements)
@@ -15,9 +19,31 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 - [Contributing](#contributing)
 - [License](#license)
 
+## How it looks like
+
+### Desktop
+
+<p align="center">
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-desktop.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<br/>
+	<em>UI for Desktop screens</em>
+</p>
+
+### Mobile
+
+<p align="center">
+	<img src="https://github.com/galpt/cake-stats/blob/main/img/how-it-looks-like-mobile.png" alt="Web UI preview" style="max-width:100%;height:auto;" />
+	<br/>
+	<em>UI for Mobile screens</em>
+</p>
+
+[&#8593; Back to Table of Contents](#table-of-contents)
+
 ## Status
 
 - Stable — all parser unit tests passing, binary builds clean for 14 target platforms.
+
+[&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Features
 
@@ -30,10 +56,14 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 - Web UI: dark TUI aesthetic (`#2D3C59` bg, JetBrains Mono, zero hover animations)
 - Responsive for desktop and mobile (sticky first column, horizontal scroll on small screens)
 
+[&#8593; Back to Table of Contents](#table-of-contents)
+
 ## Requirements
 
 - Linux kernel with `tc` + `sch_cake` module loaded, **or** OpenWrt with `kmod-sched-cake`
 - Go 1.22+ (build only; not needed at runtime)
+
+[&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Build
 
@@ -51,6 +81,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat \
 ```
 
 Pre-built binaries for all common platforms are attached to every [GitHub Release](https://github.com/galpt/cake-stats/releases).
+
+[&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Usage
 
@@ -90,6 +122,8 @@ sh uninstall.sh --force      # no prompts
 | `GET /api/stats` | Current stats snapshot (JSON) |
 | `GET /events` | SSE stream — emits updated JSON on every poll interval |
 
+[&#8593; Back to Table of Contents](#table-of-contents)
+
 ## Design Notes
 
 - **Pure stdlib Go**: no external dependencies; the binary embeds `index.html` via `//go:embed`.
@@ -98,11 +132,15 @@ sh uninstall.sh --force      # no prompts
 - **`sync.RWMutex`**: a single reader/writer lock separates the poller goroutine from concurrent HTTP handlers.
 - **Delay fields as strings**: `pk_delay`, `av_delay`, `sp_delay` are kept as raw strings (e.g., `"6.73ms"`) so the unit suffix is preserved.
 
+[&#8593; Back to Table of Contents](#table-of-contents)
+
 ## Limitations & Next Steps
 
 - Historical graphing (sparklines) is not yet implemented — only current snapshot is shown.
 - No authentication; if exposing to the internet, put behind a reverse proxy with basic auth.
 - Windows/FreeBSD builds are provided but CAKE is a Linux-only qdisc.
+
+[&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Contributing
 
@@ -113,6 +151,10 @@ go vet ./...     # static analysis
 
 PRs welcome. Please keep external dependencies at zero.
 
+[&#8593; Back to Table of Contents](#table-of-contents)
+
 ## License
 
 [MIT](LICENSE)
+
+[&#8593; Back to Table of Contents](#table-of-contents)
