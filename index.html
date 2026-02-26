@@ -274,23 +274,36 @@
     }
 
     // ── Modal with uPlot full charts ──────────────────────────────────────
+    //
+    // uPlot instances are kept alive for the lifetime of the open modal so
+    // that live SSE updates call u.setData() (in-place redraw) rather than
+    // destroying and recreating the DOM every poll cycle.  A full rebuild is
+    // only triggered when the modal is first opened or the interface changes.
 
     let modalIface = null;
+    let modalPlots = [];   // { u: uPlot, seriesCount: number }
 
     function openModal(name) {
       modalIface = name;
       const titleEl = document.getElementById('modal-title');
       if (titleEl) titleEl.textContent = name + '  \u00b7  history';
       document.getElementById('chart-modal').style.display = 'flex';
+      _destroyModalPlots();
       // Defer chart build so the modal is laid out and clientWidth is correct.
-      requestAnimationFrame(() => rebuildModalCharts(name));
+      requestAnimationFrame(() => _buildModalCharts(name));
     }
 
     function closeModal() {
       modalIface = null;
+      _destroyModalPlots();
       document.getElementById('chart-modal').style.display = 'none';
       const cd = document.getElementById('modal-charts');
       if (cd) cd.innerHTML = '';
+    }
+
+    function _destroyModalPlots() {
+      modalPlots.forEach(p => { try { p.u.destroy(); } catch (_) {} });
+      modalPlots = [];
     }
 
     function isUPlotReady() {
@@ -298,7 +311,7 @@
     }
 
     /**
-     * Build one uPlot chart inside container.
+     * Build one uPlot chart inside container and return the uPlot instance.
      * series: [{ label, data, stroke }]
      * yFmt:   value => display string for y-axis labels
      */
@@ -352,13 +365,15 @@
       };
 
       const data = [times, ...series.map(s => s.data)];
-      new uPlot(opts, data, chartWrap);
+      return new uPlot(opts, data, chartWrap);
     }
 
-    /** Wipe and rebuild all three charts for the modal's current interface. */
-    function rebuildModalCharts(name) {
+    /** Full initial build of all three charts for the modal. */
+    function _buildModalCharts(name) {
       const cd = document.getElementById('modal-charts');
       if (!cd || !modalIface) return;
+
+      _destroyModalPlots();
 
       const buf = histBuf[name];
       if (!buf || buf.t.length < 2) {
@@ -379,23 +394,51 @@
       const W = Math.max(240, (cd.clientWidth || 320) - 16);
       const H = 120;
 
-      makeChart(cd, W, H, buf.t,
+      modalPlots.push({ u: makeChart(cd, W, H, buf.t,
         [{ label: 'TX', data: buf.tx, stroke: '#4DB38A' }],
         'TX Throughput',
-        v => fmtBytes(v) + '/s');
+        v => fmtBytes(v) + '/s'), seriesCount: 1 });
 
-      makeChart(cd, W, H, buf.t,
+      modalPlots.push({ u: makeChart(cd, W, H, buf.t,
         [
           { label: 'avg latency', data: buf.av, stroke: '#5B9BD5' },
           { label: 'peak latency', data: buf.pk, stroke: '#E07070' },
         ],
         'Latency (ms)',
-        v => v.toFixed(2) + ' ms');
+        v => v.toFixed(2) + ' ms'), seriesCount: 2 });
 
-      makeChart(cd, W, H, buf.t,
+      modalPlots.push({ u: makeChart(cd, W, H, buf.t,
         [{ label: 'drops/s', data: buf.dr, stroke: '#E07070' }],
         'Drops / sec',
-        v => v.toFixed(2));
+        v => v.toFixed(2)), seriesCount: 1 });
+    }
+
+    /**
+     * Live update: push new data into existing uPlot instances without
+     * destroying/recreating the chart DOM.  Falls back to a full rebuild
+     * if the instances don't exist yet (e.g. first tick while modal opens).
+     */
+    function updateModalCharts(name) {
+      if (!modalIface) return;
+      const buf = histBuf[name];
+      if (!buf || buf.t.length < 2) return;
+
+      if (modalPlots.length === 0) {
+        // Charts not yet built (modal just opened) — do a full build.
+        _buildModalCharts(name);
+        return;
+      }
+
+      // In-place data update for each chart.  Slice to avoid sharing the
+      // exact same array reference so uPlot sees changed data.
+      const datasets = [
+        [buf.t.slice(), buf.tx.slice()],
+        [buf.t.slice(), buf.av.slice(), buf.pk.slice()],
+        [buf.t.slice(), buf.dr.slice()],
+      ];
+      modalPlots.forEach((p, i) => {
+        try { p.u.setData(datasets[i]); } catch (_) {}
+      });
     }
 
     // ── Event delegation (sparkbar tap + modal close) ─────────────────────
@@ -647,7 +690,7 @@
       });
 
       // Keep modal charts up-to-date while it's open
-      if (modalIface) rebuildModalCharts(modalIface);
+      if (modalIface) updateModalCharts(modalIface);
     }
 
     // ── SSE connection ────────────────────────────────────────────────────
