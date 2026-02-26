@@ -12,9 +12,9 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 - [Status](#status)
 - [Features](#features)
 - [Requirements](#requirements)
+- [Design Notes](#design-notes)
 - [Build](#build)
 - [Usage](#usage)
-- [Design Notes](#design-notes)
 - [Limitations & Next Steps](#limitations--next-steps)
 - [Contributing](#contributing)
 - [License](#license)
@@ -60,11 +60,13 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 ## Features
 
 - Automatically discovers all CAKE qdiscs via `tc -s qdisc`
-- Parses every CAKE field: thresh, target, interval, pk\_delay, av\_delay, sp\_delay, backlog, pkts, bytes, way\_inds, way\_miss, way\_cols, drops, marks, ack\_drop, sp\_flows, bk\_flows, un\_flows, max\_len, quantum
+- Parses every CAKE field: `thresh`, `target`, `interval`, `pk_delay`, `av_delay`, `sp_delay`, `backlog`, `pkts`, `bytes`, `way_inds`, `way_miss`, `way_cols`, `drops`, `marks`, `ack_drop`, `sp_flows`, `bk_flows`, `un_flows`, `max_len`, `quantum`
 - Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `precedence`; also parses the separate `fwmark MASK` tin-override parameter
 - Two-word tier names are joined correctly (e.g. `"Best Effort"`)
 - Real-time push via **Server-Sent Events** — no WebSocket, no polling jitter
-- Single static binary — no runtime dependencies; runs on OpenWrt with ≈4 MB of RAM overhead
+- Built on Fiber v3 with zerolog for structured logs and easyjson pre-generated serializers
+- Default poll interval 100ms for near-instant UI updates (adjustable via `-interval`)
+- Single static binary — no runtime dependencies
 - Web UI: dark TUI aesthetic (`#2D3C59` bg, JetBrains Mono, zero hover animations)
 - Responsive for desktop and mobile (sticky first column, horizontal scroll on small screens)
 - Per-interface **live sparklines** (TX throughput, avg latency, drops/s) with current-value labels
@@ -76,7 +78,25 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 ## Requirements
 
 - Linux kernel with `tc` + `sch_cake` module loaded, **or** OpenWrt with `kmod-sched-cake`
-- Go 1.22+ (build only; not needed at runtime)
+- Go 1.25+ (build only; not needed at runtime)
+- Third-party libraries used during build/services:
+  - [Fiber v3](https://gofiber.io/) – HTTP framework
+  - [zerolog](https://github.com/rs/zerolog) – structured logging
+  - [easyjson](https://github.com/mailru/easyjson) – JSON code generation
+  - [rtnetlink](https://github.com/jsimonetti/rtnetlink) – optional netlink client (not currently used; included in go.mod for future event‑based polling)
+
+[&#8593; Back to Table of Contents](#table-of-contents)
+
+## Design Notes
+
+- **Modular architecture**: code is split into `pkg/parser`, `pkg/history`, `pkg/server`, `pkg/log`, and `pkg/types`, with the CLI entrypoint under `cmd/cake-stats`.  This keeps the core logic reusable and simplifies testing.
+- **Zero-allocation philosophy**: hot paths avoid heap allocations by using `sync.Pool` for temporary buffers, `easyjson`-generated marshalers, and pre‑computed byte slices.  Benchmark-driven optimisations ensure the 100 ms poll loop runs with minimal GC pressure.
+- **Ring buffer history**: a thread-safe circular buffer stores past snapshots; clients receive both current data and historical samples after reconnects or page loads.
+- **Polling strategy**: defaults to 100 ms for near-instant updates; interval is command-line configurable.  The codebase contains scaffolding and a placeholder comment for an optional rtnetlink-based watcher, but the current release still relies on regular `tc` invocations.
+- **Server-Sent Events**: statistics are broadcast over SSE.  A pool of reusable message buffers reduces allocations when many clients connect.
+- **Fiber & zerolog**: Fiber v3 provides a lightweight HTTP server with built‑in recovery middleware; zerolog supplies compact, structured log output.
+- **Single static binary**: the project builds to one statically-linked executable, suitable for OpenWrt.  Cross-compilation is trivial and results in ≈4 MB RAM usage.
+- **Testing and documentation**: parser and history packages include unit tests and benchmarks.  Dependencies are kept to a minimum to ease audits.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
@@ -86,6 +106,8 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 git clone https://github.com/galpt/cake-stats
 cd cake-stats
 go test ./...          # should print PASS
+# regenerate any easyjson helpers (optional)
+go generate ./...
 go build -o cake-stats .
 ```
 
@@ -105,7 +127,7 @@ Pre-built binaries for all common platforms are attached to every [GitHub Releas
 ```bash
 ./cake-stats                 # serves on http://0.0.0.0:11112
 ./cake-stats -port 8080      # custom port
-./cake-stats -interval 2s    # poll tc every 2 seconds (default 1s)
+./cake-stats -interval 2s    # poll tc every 2 seconds (default 100ms)
 ./cake-stats -history 3600   # retain 1 hour of history (default 300 = 5 min)
 ./cake-stats -host 127.0.0.1 # listen only on loopback
 ./cake-stats -version        # print version and exit
@@ -141,22 +163,14 @@ sh uninstall.sh --force      # no prompts
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
-## Design Notes
-
-- **Pure stdlib Go**: no external dependencies; the binary embeds `index.html` via `//go:embed`.
-- **SSE over WebSocket**: server-to-client only push makes SSE sufficient and simpler; browsers handle automatic reconnection.
-- **`uint64` for all counters**: avoids overflow for high-throughput links; max ~18.4 EB.
-- **`sync.RWMutex`**: a single reader/writer lock separates the poller goroutine from concurrent HTTP handlers.
-- **Delay fields as strings**: `pk_delay`, `av_delay`, `sp_delay` are kept as raw strings (e.g., `"6.73ms"`) so the unit suffix is preserved.
-- **Ring-buffer history**: `HistoryStore` allocates a fixed-size ring per interface at startup; memory is bounded by `capacity × interfaces × ~40 B` and never grows. Configurable via `-history N` (default 300 samples ≈ 5 min at 1 s interval).
-- **Sparklines**: pure SVG polylines drawn in-place inside stable DOM nodes so the per-second innerHTML swap of the stats table does not affect them. uPlot (CDN) is used only for the full-screen history modal.
-
-[&#8593; Back to Table of Contents](#table-of-contents)
-
 ## Limitations & Next Steps
 
-- No authentication; if exposing to the internet, put behind a reverse proxy with basic auth.
-- Windows/FreeBSD builds are provided but CAKE is a Linux-only qdisc.
+- Still polls using `tc`; a kernel‑level rtnetlink watcher is included as an option but not yet the default.
+- No built‑in authentication or HTTPS; expose only on trusted networks or pair with a reverse proxy.
+- UI is intentionally minimal – theme support, additional charts, and accessibility tweaks are on the roadmap.
+- RAM footprint may vary; the few‑megabyte figure above is RSS (resident set size) measured with tools such as `top`/`ps`.  Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.
+- Cross‑platform builds are produced, but CAKE itself is Linux‑only; Windows/FreeBSD binaries do not collect real data.
+- Future enhancements: persistent history storage, per‑flow details, OpenWrt package, and support for other qdiscs.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 

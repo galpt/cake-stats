@@ -1,4 +1,4 @@
-package main
+package parser
 
 import (
 	"testing"
@@ -79,14 +79,28 @@ qdisc cake 800e: dev ifb4eth1 root refcnt 2 bandwidth 50Mbit diffserv4 dual-dsth
 `
 
 func TestParseTCOutput_Count(t *testing.T) {
-	results := ParseTCOutput(sampleTCOutput)
+	results := parseText(sampleTCOutput)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 CAKE interfaces, got %d", len(results))
 	}
 }
 
+func assertEqual(t *testing.T, field, want, got string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: want %q, got %q", field, want, got)
+	}
+}
+
+func assertUint(t *testing.T, field string, want, got uint64) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: want %d, got %d", field, want, got)
+	}
+}
+
 func TestParseTCOutput_EgressHeader(t *testing.T) {
-	cs := ParseTCOutput(sampleTCOutput)[0]
+	cs := parseText(sampleTCOutput)[0]
 	assertEqual(t, "interface", "eth1", cs.Interface)
 	assertEqual(t, "direction", "egress", cs.Direction)
 	assertEqual(t, "bandwidth", "50Mbit", cs.Bandwidth)
@@ -103,7 +117,7 @@ func TestParseTCOutput_EgressHeader(t *testing.T) {
 }
 
 func TestParseTCOutput_EgressGlobalStats(t *testing.T) {
-	cs := ParseTCOutput(sampleTCOutput)[0]
+	cs := parseText(sampleTCOutput)[0]
 	assertUint(t, "sent_bytes", 453393887, cs.SentBytes)
 	assertUint(t, "sent_pkts", 1599017, cs.SentPkts)
 	assertUint(t, "dropped", 2515, cs.Dropped)
@@ -117,7 +131,7 @@ func TestParseTCOutput_EgressGlobalStats(t *testing.T) {
 }
 
 func TestParseTCOutput_EgressTiers(t *testing.T) {
-	cs := ParseTCOutput(sampleTCOutput)[0]
+	cs := parseText(sampleTCOutput)[0]
 	if len(cs.Tiers) != 4 {
 		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
 	}
@@ -136,7 +150,7 @@ func TestParseTCOutput_EgressTiers(t *testing.T) {
 }
 
 func TestParseTCOutput_FloatDelays(t *testing.T) {
-	cs := ParseTCOutput(sampleTCOutput)[1]
+	cs := parseText(sampleTCOutput)[1]
 	video := cs.Tiers[2]
 	if video.PkDelay != "6.73ms" {
 		t.Errorf("expected pk_delay=6.73ms, got %q", video.PkDelay)
@@ -147,7 +161,7 @@ func TestParseTCOutput_FloatDelays(t *testing.T) {
 }
 
 func TestParseTCOutput_IngressStats(t *testing.T) {
-	cs := ParseTCOutput(sampleTCOutput)[1]
+	cs := parseText(sampleTCOutput)[1]
 	assertEqual(t, "interface", "ifb4eth1", cs.Interface)
 	assertUint(t, "dropped", 28962, cs.Dropped)
 	assertUint(t, "marks", 117224, cs.Tiers[1].Marks)
@@ -158,7 +172,7 @@ func TestParseHeader_Precedence(t *testing.T) {
 	raw := `qdisc cake 800d: dev eth2 root refcnt 2 bandwidth 20Mbit precedence rtt 100ms noatm overhead 0 memlimit 32Mb 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
  backlog 0b 0p requeues 0`
-	stats := ParseTCOutput(raw)
+	stats := parseText(raw)
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
 	}
@@ -173,15 +187,28 @@ func TestParseHeader_FwmarkMask(t *testing.T) {
 	raw := `qdisc cake 800d: dev eth3 root refcnt 2 bandwidth 20Mbit diffserv4 fwmark 0xfc rtt 100ms noatm overhead 0 memlimit 32Mb 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
  backlog 0b 0p requeues 0`
-	stats := ParseTCOutput(raw)
+	stats := parseText(raw)
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
 	}
 	cs := stats[0]
-	// diffserv mode must be diffserv4, not "fwmark"
 	assertEqual(t, "diffserv_mode", "diffserv4", cs.DiffservMode)
-	// mask value must be captured separately
 	assertEqual(t, "fwmark_mask", "0xfc", cs.FwmarkMask)
+}
+
+func TestParseJSONMinimal(t *testing.T) {
+	jsonData := `[{"kind":"cake","dev":"eth0","handle":"800d:","options":{"bandwidth":5000000,"diffserv":"diffserv4","nat":true,"atm":"atm","overhead":48,"rtt":100000},"bytes":123,"packets":456,"drops":7,"overlimits":8,"requeues":9,"memory_used":100,"memory_limit":33554432,"capacity_estimate":5000000,"min_network_size":28,"max_network_size":1500,"avg_hdr_offset":14,"tins":[{"threshold_rate":3125,"sent_bytes":0,"drops":0,"max_pkt_len":0,"flow_quantum":300}]}]`
+	stats, err := parseJSON([]byte(jsonData))
+	if err != nil {
+		t.Fatalf("parseJSON error: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(stats))
+	}
+	cs := stats[0]
+	assertEqual(t, "interface", "eth0", cs.Interface)
+	assertUint(t, "drops", 7, cs.Dropped)
+	assertUint(t, "max_len", 0, cs.Tiers[0].MaxLen)
 }
 
 func TestParseUint64_Safe(t *testing.T) {
@@ -202,19 +229,5 @@ func TestParseUint64_Safe(t *testing.T) {
 		if got := parseUint64(c.in); got != c.want {
 			t.Errorf("parseUint64(%q)=%d want %d", c.in, got, c.want)
 		}
-	}
-}
-
-func assertEqual(t *testing.T, field, want, got string) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s: want %q, got %q", field, want, got)
-	}
-}
-
-func assertUint(t *testing.T, field string, want, got uint64) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s: want %d, got %d", field, want, got)
 	}
 }

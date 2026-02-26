@@ -1,114 +1,165 @@
-package main
+package parser
+
+// The current implementation of CollectStats shells out to `tc` and prefers
+// the JSON output (tc -j).  If even lower latency is required the
+// implementation can be swapped to use a netlink client such as
+// github.com/jsimonetti/rtnetlink to query qdisc statistics directly,
+// avoiding fork/exec entirely.
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+
+	"github.com/galpt/cake-stats/pkg/types"
 )
 
-// CakeTier holds per-tier statistics from the CAKE table section.
-// All counters use uint64 to handle arbitrarily large values without overflow.
-type CakeTier struct {
-	Name     string `json:"name"`
-	Thresh   string `json:"thresh"`
-	Target   string `json:"target"`
-	Interval string `json:"interval"`
-	PkDelay  string `json:"pk_delay"`
-	AvDelay  string `json:"av_delay"`
-	SpDelay  string `json:"sp_delay"`
-	Backlog  string `json:"backlog"`
-	Pkts     uint64 `json:"pkts"`
-	Bytes    uint64 `json:"bytes"`
-	WayInds  uint64 `json:"way_inds"`
-	WayMiss  uint64 `json:"way_miss"`
-	WayCols  uint64 `json:"way_cols"`
-	Drops    uint64 `json:"drops"`
-	Marks    uint64 `json:"marks"`
-	AckDrop  uint64 `json:"ack_drop"`
-	SpFlows  uint64 `json:"sp_flows"`
-	BkFlows  uint64 `json:"bk_flows"`
-	UnFlows  uint64 `json:"un_flows"`
-	MaxLen   uint64 `json:"max_len"`
-	Quantum  uint64 `json:"quantum"`
-}
+var (
+	jsonSupport    bool
+	jsonDetectOnce sync.Once
+)
 
-// CakeStats holds all parsed information for a single CAKE qdisc instance.
-type CakeStats struct {
-	Interface    string `json:"interface"`
-	Handle       string `json:"handle"`
-	Direction    string `json:"direction"`
-	Bandwidth    string `json:"bandwidth"`
-	DiffservMode string `json:"diffserv_mode"`
-	RTT          string `json:"rtt"`
-	Overhead     string `json:"overhead"`
-	DualMode     string `json:"dual_mode"`
-	FwmarkMask   string `json:"fwmark_mask"` // non-empty when fwmark MASK is present in header
-	NATEnabled   bool   `json:"nat_enabled"`
-	ATMEnabled   bool   `json:"atm_enabled"`
-	MemLimit     string `json:"memlimit"`
-	RawHeader    string `json:"raw_header"`
-
-	SentBytes  uint64 `json:"sent_bytes"`
-	SentPkts   uint64 `json:"sent_pkts"`
-	Dropped    uint64 `json:"dropped"`
-	Overlimits uint64 `json:"overlimits"`
-	Requeues   uint64 `json:"requeues"`
-
-	BacklogBytes string `json:"backlog_bytes"`
-	BacklogPkts  uint64 `json:"backlog_pkts"`
-
-	MemoryUsed  string `json:"memory_used"`
-	MemoryTotal string `json:"memory_total"`
-	CapacityEst string `json:"capacity_estimate"`
-
-	MinNetSize   string `json:"min_net_size"`
-	MaxNetSize   string `json:"max_net_size"`
-	MinAdjSize   string `json:"min_adj_size"`
-	MaxAdjSize   string `json:"max_adj_size"`
-	AvgHdrOffset string `json:"avg_hdr_offset"`
-
-	Tiers     []CakeTier `json:"tiers"`
-	UpdatedAt time.Time  `json:"updated_at"`
-
-	// Computed per-poll by HistoryStore.Record — not parsed from tc output.
-	// Zero on the first poll (no previous sample to diff against).
-	TxBytesPerS  float64 `json:"tx_bytes_per_s"`
-	DropsPerS    float64 `json:"drops_per_s"`
-	MaxAvDelayMs float64 `json:"max_av_delay_ms"`
-	MaxPkDelayMs float64 `json:"max_pk_delay_ms"`
-}
-
-// runTC executes "tc -s qdisc" and returns stdout.
-// It searches common sbin paths so it works on both OpenWrt and Linux distros.
-func runTC() (string, error) {
-	candidates := []string{"tc", "/sbin/tc", "/usr/sbin/tc", "/usr/bin/tc"}
-	tcPath := ""
-	for _, c := range candidates {
-		if p, err := exec.LookPath(c); err == nil {
-			tcPath = p
-			break
+// supportsJSON detects whether the local `tc` binary can emit JSON.  The
+// result is cached so we only run the probe once.
+func supportsJSON() bool {
+	jsonDetectOnce.Do(func() {
+		cmd := exec.Command("tc", "-j", "-s", "qdisc")
+		if err := cmd.Run(); err == nil {
+			jsonSupport = true
 		}
-	}
-	if tcPath == "" {
-		tcPath = "tc"
-	}
-	cmd := exec.Command(tcPath, "-s", "qdisc")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("tc -s qdisc: %w", err)
-	}
-	return string(out), nil
+	})
+	return jsonSupport
 }
 
-// ParseTCOutput parses the full output of "tc -s qdisc" and returns every
-// CAKE qdisc found.
-func ParseTCOutput(raw string) []CakeStats {
-	lines := strings.Split(raw, "\n")
+// CollectStats polls the kernel via `tc` and returns a slice of CakeStats.
+// It prefers JSON output and falls back to parsing the human-readable text.
+func CollectStats(ctx context.Context) ([]types.CakeStats, error) {
+	if supportsJSON() {
+		out, err := exec.CommandContext(ctx, "tc", "-j", "-s", "qdisc").Output()
+		if err == nil {
+			return parseJSON(out)
+		}
+		// if JSON invocation fails for any reason, fall back to text
+	}
 
-	// Split into per-qdisc blocks.
+	out, err := exec.CommandContext(ctx, "tc", "-s", "qdisc").Output()
+	if err != nil {
+		return nil, fmt.Errorf("tc -s qdisc: %w", err)
+	}
+	return parseText(string(out)), nil
+}
+
+// parseJSON handles the JSON output from "tc -j -s qdisc".  We don't try to
+// mirror every field the kernel sends; the goal is to populate a minimal
+// CakeStats value with the same information our text parser would produce.
+func parseJSON(raw []byte) ([]types.CakeStats, error) {
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return nil, err
+	}
+	var out []types.CakeStats
+	for _, obj := range arr {
+		if kind, _ := obj["kind"].(string); kind != "cake" {
+			continue
+		}
+		cs := types.CakeStats{UpdatedAt: time.Now().UTC()}
+		if dev, ok := obj["dev"].(string); ok {
+			cs.Interface = dev
+		}
+		if h, ok := obj["handle"].(string); ok {
+			cs.Handle = h
+		}
+		if opts, ok := obj["options"].(map[string]interface{}); ok {
+			if bw, ok := opts["bandwidth"].(float64); ok {
+				cs.Bandwidth = fmt.Sprintf("%dbit", int64(bw))
+			}
+			if ds, ok := opts["diffserv"].(string); ok {
+				cs.DiffservMode = ds
+			}
+			if nat, ok := opts["nat"].(bool); ok && nat {
+				cs.NATEnabled = true
+			}
+			if atm, ok := opts["atm"].(string); ok && atm != "" {
+				cs.ATMEnabled = true
+			}
+			if ov, ok := opts["overhead"].(float64); ok {
+				cs.Overhead = fmt.Sprintf("%v", int64(ov))
+			}
+			if rtt, ok := opts["rtt"].(float64); ok {
+				cs.RTT = fmt.Sprintf("%dms", int64(rtt/1000))
+			}
+		}
+		if v, ok := getUint(obj, "bytes"); ok {
+			cs.SentBytes = v
+		}
+		if v, ok := getUint(obj, "packets"); ok {
+			cs.SentPkts = v
+		}
+		if v, ok := getUint(obj, "drops"); ok {
+			cs.Dropped = v
+		}
+		if v, ok := getUint(obj, "overlimits"); ok {
+			cs.Overlimits = v
+		}
+		if v, ok := getUint(obj, "requeues"); ok {
+			cs.Requeues = v
+		}
+		if v, ok := getUint(obj, "memory_used"); ok {
+			cs.MemoryUsed = fmt.Sprintf("%db", v)
+		}
+		if v, ok := getUint(obj, "memory_limit"); ok {
+			cs.MemoryTotal = fmt.Sprintf("%dMb", v/1024/1024)
+		}
+		if v, ok := getUint(obj, "capacity_estimate"); ok {
+			cs.CapacityEst = fmt.Sprintf("%dMbit", v/1000000)
+		}
+		if v, ok := getUint(obj, "min_network_size"); ok {
+			cs.MinNetSize = fmt.Sprintf("%d", v)
+		}
+		if v, ok := getUint(obj, "max_network_size"); ok {
+			cs.MaxNetSize = fmt.Sprintf("%d", v)
+		}
+		if v, ok := getUint(obj, "avg_hdr_offset"); ok {
+			cs.AvgHdrOffset = fmt.Sprintf("%d", v)
+		}
+		if tins, ok := obj["tins"].([]interface{}); ok {
+			var tiers []types.CakeTier
+			for _, ti := range tins {
+				if m, ok := ti.(map[string]interface{}); ok {
+					var t types.CakeTier
+					if thr, ok := getUint(m, "threshold_rate"); ok {
+						t.Thresh = fmt.Sprintf("%d", thr)
+					}
+					if sb, ok := getUint(m, "sent_bytes"); ok {
+						t.Bytes = sb
+					}
+					if dr, ok := getUint(m, "drops"); ok {
+						t.Drops = dr
+					}
+					if ml, ok := getUint(m, "max_pkt_len"); ok {
+						t.MaxLen = ml
+					}
+					if q, ok := getUint(m, "flow_quantum"); ok {
+						t.Quantum = q
+					}
+					tiers = append(tiers, t)
+				}
+			}
+			cs.Tiers = tiers
+		}
+		out = append(out, cs)
+	}
+	return out, nil
+}
+
+func parseText(raw string) []types.CakeStats {
+	lines := strings.Split(raw, "\n")
 	type block struct{ lines []string }
 	var blocks []block
 	cur := block{}
@@ -122,8 +173,7 @@ func ParseTCOutput(raw string) []CakeStats {
 	if len(cur.lines) > 0 {
 		blocks = append(blocks, cur)
 	}
-
-	var result []CakeStats
+	var result []types.CakeStats
 	for _, b := range blocks {
 		if len(b.lines) == 0 || !strings.Contains(b.lines[0], "qdisc cake") {
 			continue
@@ -135,19 +185,18 @@ func ParseTCOutput(raw string) []CakeStats {
 	return result
 }
 
-// parseCakeBlock converts one CAKE qdisc block into a CakeStats struct.
-func parseCakeBlock(lines []string) (CakeStats, bool) {
+// --- helpers below ---
+
+func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 	if len(lines) == 0 {
-		return CakeStats{}, false
+		return types.CakeStats{}, false
 	}
-	cs := CakeStats{UpdatedAt: time.Now()}
+	cs := types.CakeStats{UpdatedAt: time.Now().UTC()}
 	cs.RawHeader = strings.TrimSpace(lines[0])
 	parseHeader(&cs, lines[0])
-
 	var tierNames []string
 	tierFieldBuf := map[string][]string{}
 	inTable := false
-
 	for i := 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
@@ -157,48 +206,35 @@ func parseCakeBlock(lines []string) (CakeStats, bool) {
 		if len(fields) == 0 {
 			continue
 		}
-
 		switch {
 		case strings.HasPrefix(trimmed, "Sent "):
 			parseSentLine(&cs, trimmed)
-
 		case strings.HasPrefix(trimmed, "backlog "):
 			parseBacklogLine(&cs, trimmed)
-
 		case strings.HasPrefix(trimmed, "memory used:"):
 			parseMemoryLine(&cs, trimmed)
-
 		case strings.HasPrefix(trimmed, "capacity estimate:"):
 			cs.CapacityEst = strings.TrimSpace(strings.TrimPrefix(trimmed, "capacity estimate:"))
-
 		case strings.HasPrefix(trimmed, "min/max network layer size:"):
 			cs.MinNetSize, cs.MaxNetSize = parseMinMax(trimmed)
-
 		case strings.HasPrefix(trimmed, "min/max overhead-adjusted size:"):
 			cs.MinAdjSize, cs.MaxAdjSize = parseMinMax(trimmed)
-
 		case strings.HasPrefix(trimmed, "average network hdr offset:"):
-			cs.AvgHdrOffset = strings.TrimSpace(
-				strings.TrimPrefix(trimmed, "average network hdr offset:"),
-			)
-
+			cs.AvgHdrOffset = strings.TrimSpace(strings.TrimPrefix(trimmed, "average network hdr offset:"))
 		case isTierHeaderLine(fields[0]):
 			tierNames = parseTierNames(fields)
 			inTable = true
-
 		case inTable && len(fields) >= 2 && unicode.IsLower(rune(fields[0][0])):
 			tierFieldBuf[fields[0]] = fields[1:]
 		}
 	}
-
 	if len(tierNames) > 0 {
 		cs.Tiers = assembleTiers(tierNames, tierFieldBuf)
 	}
 	return cs, true
 }
 
-// parseHeader fills a CakeStats from the qdisc header line.
-func parseHeader(cs *CakeStats, line string) {
+func parseHeader(cs *types.CakeStats, line string) {
 	fs := strings.Fields(strings.TrimSpace(line))
 	if len(fs) < 5 {
 		return
@@ -223,7 +259,6 @@ func parseHeader(cs *CakeStats, line string) {
 		case "diffserv3", "diffserv4", "diffserv8", "besteffort", "precedence":
 			cs.DiffservMode = tok
 		case "fwmark":
-			// fwmark is not a diffserv mode; it takes a bitmask argument.
 			if i+1 < len(fs) {
 				cs.FwmarkMask = fs[i+1]
 				i++
@@ -255,8 +290,7 @@ func parseHeader(cs *CakeStats, line string) {
 	}
 }
 
-// parseSentLine handles: Sent X bytes Y pkt (dropped A, overlimits B requeues C)
-func parseSentLine(cs *CakeStats, line string) {
+func parseSentLine(cs *types.CakeStats, line string) {
 	fs := strings.Fields(line)
 	if len(fs) >= 4 {
 		cs.SentBytes = parseUint64(fs[1])
@@ -280,8 +314,7 @@ func parseSentLine(cs *CakeStats, line string) {
 	}
 }
 
-// parseBacklogLine handles: backlog Xb Yp requeues Z
-func parseBacklogLine(cs *CakeStats, line string) {
+func parseBacklogLine(cs *types.CakeStats, line string) {
 	fs := strings.Fields(line)
 	if len(fs) >= 3 {
 		cs.BacklogBytes = fs[1]
@@ -289,8 +322,7 @@ func parseBacklogLine(cs *CakeStats, line string) {
 	}
 }
 
-// parseMemoryLine handles: memory used: Xb of YMb
-func parseMemoryLine(cs *CakeStats, line string) {
+func parseMemoryLine(cs *types.CakeStats, line string) {
 	after := strings.TrimSpace(strings.TrimPrefix(line, "memory used:"))
 	parts := strings.Fields(after)
 	if len(parts) >= 3 {
@@ -299,7 +331,6 @@ func parseMemoryLine(cs *CakeStats, line string) {
 	}
 }
 
-// parseMinMax extracts lo/hi from "...label: X / Y".
 func parseMinMax(line string) (lo, hi string) {
 	i := strings.Index(line, ":")
 	if i == -1 {
@@ -313,20 +344,16 @@ func parseMinMax(line string) (lo, hi string) {
 	return
 }
 
-// knownTierWords are the first tokens that identify a CAKE tier-name header line.
 var knownTierWords = map[string]bool{
 	"Bulk": true, "Best": true, "Voice": true, "Video": true,
 	"CS1": true, "CS2": true, "CS3": true, "CS4": true,
 	"CS5": true, "CS6": true, "CS7": true, "BE": true,
 }
 
-// isTierHeaderLine returns true when the token matches a known tier name.
 func isTierHeaderLine(first string) bool {
 	return knownTierWords[first]
 }
 
-// parseTierNames reconstructs tier names from a whitespace-split header row.
-// "Best Effort" is the only two-word tier name.
 func parseTierNames(words []string) []string {
 	var names []string
 	for i := 0; i < len(words); i++ {
@@ -340,13 +367,11 @@ func parseTierNames(words []string) []string {
 	return names
 }
 
-// assembleTiers builds a CakeTier slice from the collected field->values map.
-func assembleTiers(names []string, buf map[string][]string) []CakeTier {
-	tiers := make([]CakeTier, len(names))
+func assembleTiers(names []string, buf map[string][]string) []types.CakeTier {
+	tiers := make([]types.CakeTier, len(names))
 	for i, name := range names {
 		tiers[i].Name = name
 	}
-
 	get := func(field string, idx int) string {
 		v, ok := buf[field]
 		if !ok || idx >= len(v) {
@@ -357,7 +382,6 @@ func assembleTiers(names []string, buf map[string][]string) []CakeTier {
 	getU := func(field string, idx int) uint64 {
 		return parseUint64(get(field, idx))
 	}
-
 	for i := range tiers {
 		t := &tiers[i]
 		t.Thresh = get("thresh", i)
@@ -384,8 +408,6 @@ func assembleTiers(names []string, buf map[string][]string) []CakeTier {
 	return tiers
 }
 
-// parseUint64 safely converts a string to uint64.
-// Returns 0 on error -- never wraps or goes negative.
 func parseUint64(s string) uint64 {
 	s = strings.TrimRight(s, "bBkKmMgGpP")
 	v, err := strconv.ParseUint(s, 10, 64)
@@ -393,4 +415,16 @@ func parseUint64(s string) uint64 {
 		return 0
 	}
 	return v
+}
+
+func getUint(m map[string]interface{}, key string) (uint64, bool) {
+	if v, ok := m[key]; ok {
+		switch t := v.(type) {
+		case float64:
+			return uint64(t), true
+		case string:
+			return parseUint64(t), true
+		}
+	}
+	return 0, false
 }

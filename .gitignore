@@ -1,2 +1,11 @@
+# compiled binary in workspace root
 cake-stats
+
+# command binary if built via cmd/
+/cmd/cake-stats/cake-stats
+
+# windows executables
 *.exe
+
+# easyjson generated helpers (if codegen is run)
+**/*_easyjson.go
