@@ -24,23 +24,40 @@ type HistorySample struct {
 
 // ifaceState tracks per-interface counters and the ring buffer.
 type ifaceState struct {
-	prevSentBytes uint64
-	prevDropped   uint64
-	prevTime      time.Time
+	prevTxBytes uint64 // sum of per-tier Bytes (or SentBytes when no tiers)
+	prevDropped uint64
+	prevTime    time.Time
 
 	// Ring buffer — allocated once at capacity; never grows.
-	samples  []HistorySample
-	head     int // index of the next write slot
-	count    int // number of valid entries (0..capacity)
+	samples []HistorySample
+	head    int // index of the next write slot
+	count   int // number of valid entries (0..capacity)
 }
 
 func newIfaceState(capacity int, cs *CakeStats) *ifaceState {
 	return &ifaceState{
-		prevSentBytes: cs.SentBytes,
-		prevDropped:   cs.Dropped,
-		prevTime:      time.Now(),
-		samples:       make([]HistorySample, capacity),
+		prevTxBytes: txBytes(cs),
+		prevDropped: cs.Dropped,
+		prevTime:    time.Now(),
+		samples:     make([]HistorySample, capacity),
 	}
+}
+
+// txBytes returns the sum of per-tier Bytes for cs, falling back to
+// cs.SentBytes when no tier data is available.  Per-tier bytes are
+// preferred because they are taken from the CAKE tier table (small
+// integer values that always parse cleanly) rather than the top-level
+// "Sent X bytes" counter, which can be formatted with SI prefixes on
+// some iproute2/OpenWrt builds and would silently parse as 0.
+func txBytes(cs *CakeStats) uint64 {
+	var sum uint64
+	for _, t := range cs.Tiers {
+		sum += t.Bytes
+	}
+	if sum > 0 {
+		return sum
+	}
+	return cs.SentBytes
 }
 
 // push appends a sample, overwriting the oldest entry when the buffer is full.
@@ -130,10 +147,12 @@ func (hs *HistoryStore) Record(stats []CakeStats, interval time.Duration) {
 		}
 
 		// ── TX throughput ────────────────────────────────────────────────
+		// Use per-tier Bytes sum (falls back to SentBytes when no tiers).
 		// Guard against counter resets (e.g. interface flap).
+		currTx := txBytes(cs)
 		var txRate float64
-		if cs.SentBytes >= st.prevSentBytes {
-			txRate = float64(cs.SentBytes-st.prevSentBytes) / elapsed
+		if currTx >= st.prevTxBytes {
+			txRate = float64(currTx-st.prevTxBytes) / elapsed
 		}
 
 		// ── Drops per second ─────────────────────────────────────────────
@@ -162,7 +181,7 @@ func (hs *HistoryStore) Record(stats []CakeStats, interval time.Duration) {
 		}, hs.capacity)
 
 		// ── Update previous-value state ──────────────────────────────────
-		st.prevSentBytes = cs.SentBytes
+		st.prevTxBytes = currTx
 		st.prevDropped = cs.Dropped
 		st.prevTime = now
 	}

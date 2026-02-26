@@ -41,7 +41,9 @@ func TestHistoryStore_BasicDelta(t *testing.T) {
 		Interface: "eth0",
 		SentBytes: 1_000_000,
 		Dropped:   0,
-		Tiers:     []CakeTier{{AvDelay: "5ms", PkDelay: "10ms"}},
+		Tiers: []CakeTier{
+			{AvDelay: "5ms", PkDelay: "10ms", Bytes: 1_000_000},
+		},
 	}}
 	hs.Record(stats1, time.Second)
 
@@ -55,7 +57,9 @@ func TestHistoryStore_BasicDelta(t *testing.T) {
 		Interface: "eth0",
 		SentBytes: 2_000_000, // +1 MB
 		Dropped:   2,
-		Tiers:     []CakeTier{{AvDelay: "6ms", PkDelay: "12ms"}},
+		Tiers: []CakeTier{
+			{AvDelay: "6ms", PkDelay: "12ms", Bytes: 2_000_000},
+		},
 	}}
 	// Sleep a tiny bit so elapsed > 0
 	time.Sleep(10 * time.Millisecond)
@@ -84,12 +88,22 @@ func TestHistoryStore_BasicDelta(t *testing.T) {
 func TestHistoryStore_CounterReset(t *testing.T) {
 	hs := NewHistoryStore(10)
 
-	stats1 := []CakeStats{{Interface: "eth0", SentBytes: 9_000_000, Dropped: 100}}
+	stats1 := []CakeStats{{
+		Interface: "eth0",
+		SentBytes: 9_000_000,
+		Dropped:   100,
+		Tiers:     []CakeTier{{Bytes: 9_000_000}},
+	}}
 	hs.Record(stats1, time.Second)
 	time.Sleep(10 * time.Millisecond)
 
 	// Simulate a counter reset (new value < previous).
-	stats2 := []CakeStats{{Interface: "eth0", SentBytes: 100, Dropped: 5}}
+	stats2 := []CakeStats{{
+		Interface: "eth0",
+		SentBytes: 100,
+		Dropped:   5,
+		Tiers:     []CakeTier{{Bytes: 100}},
+	}}
 	hs.Record(stats2, time.Second)
 
 	// Delta must not go negative — should be clamped to 0.
@@ -106,13 +120,13 @@ func TestHistoryStore_RingBufferWraps(t *testing.T) {
 	hs := NewHistoryStore(cap)
 
 	// Seed with first poll (no sample).
-	stats := []CakeStats{{Interface: "eth0", SentBytes: 0}}
+	stats := []CakeStats{{Interface: "eth0", SentBytes: 0, Tiers: []CakeTier{{Bytes: 0}}}}
 	hs.Record(stats, time.Second)
 
 	// Push cap+2 more polls — ring should contain exactly cap samples.
 	for i := 1; i <= cap+2; i++ {
 		time.Sleep(2 * time.Millisecond)
-		stats = []CakeStats{{Interface: "eth0", SentBytes: uint64(i) * 1000}}
+		stats = []CakeStats{{Interface: "eth0", SentBytes: uint64(i) * 1000, Tiers: []CakeTier{{Bytes: uint64(i) * 1000}}}}
 		hs.Record(stats, time.Second)
 	}
 
