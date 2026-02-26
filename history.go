@@ -43,20 +43,17 @@ func newIfaceState(capacity int, cs *CakeStats) *ifaceState {
 	}
 }
 
-// txBytes returns the sum of per-tier Bytes for cs, falling back to
-// cs.SentBytes when no tier data is available.  Per-tier bytes are
-// preferred because they are taken from the CAKE tier table (small
-// integer values that always parse cleanly) rather than the top-level
-// "Sent X bytes" counter, which can be formatted with SI prefixes on
-// some iproute2/OpenWrt builds and would silently parse as 0.
+// txBytes returns the actual bytes transmitted for cs.
+//
+// We use cs.SentBytes (the top-level "Sent X bytes" counter from tc) because
+// it reflects real IP-layer bytes on the wire.  CAKE's per-tier Bytes counters
+// use ATM-overhead-adjusted sizes when "atm overhead N" is configured, which
+// inflates the derived rate above the actual bandwidth limit and produces
+// inaccurate graphs (e.g. showing throughput > 50 Mbit on a 50 Mbit link).
+//
+// The tc "Sent X bytes" line always outputs a plain integer on both mainline
+// Linux and OpenWrt, so SI-prefix parsing is not a concern here.
 func txBytes(cs *CakeStats) uint64 {
-	var sum uint64
-	for _, t := range cs.Tiers {
-		sum += t.Bytes
-	}
-	if sum > 0 {
-		return sum
-	}
 	return cs.SentBytes
 }
 
