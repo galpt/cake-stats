@@ -1,0 +1,12 @@
+#!/bin/sh
+# cake-stats hotplug script
+# Restarts cake-stats when a CAKE-managed interface goes up or down
+# so the dashboard reflects the current interface state immediately.
+
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || exit 0
+
+# Only react to interfaces that actually use CAKE
+if tc qdisc show dev "$INTERFACE" 2>/dev/null | grep -q "qdisc cake"; then
+	logger -t "cake-stats" "Interface $INTERFACE $ACTION – restarting"
+	/etc/init.d/cake-stats restart 2>/dev/null || true
+fi

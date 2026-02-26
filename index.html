@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>cake-stats</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+  <style type="text/tailwindcss">
+    @theme {
+      --font-mono: "JetBrains Mono", "Courier New", monospace;
+    }
+    /* Apply monospace everywhere and disable all transitions/animations  */
+    *, *::before, *::after {
+      font-family: "JetBrains Mono", "Courier New", monospace;
+      transition: none !important;
+      animation: none !important;
+    }
+    /* Sticky first column in tier tables */
+    .sticky-col {
+      position: sticky;
+      left: 0;
+      z-index: 10;
+    }
+    /* Thin scrollbar for table overflow containers */
+    .scroll-thin::-webkit-scrollbar { height: 4px; }
+    .scroll-thin::-webkit-scrollbar-track { background: #1E2D47; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: #3D5070; border-radius: 2px; }
+  </style>
+</head>
+
+<body class="bg-[#2D3C59] text-[#FFFFFF] min-h-screen text-sm">
+
+  <!-- ═══ Top bar ═══════════════════════════════════════════════════════════ -->
+  <header class="bg-[#0F1B2D] border-b border-[#3D5070] px-4 py-2
+                 flex flex-wrap items-center justify-between gap-2
+                 sticky top-0 z-50">
+    <div class="flex items-center gap-4">
+      <span class="font-bold text-[#5B9BD5] text-base tracking-widest">cake-stats</span>
+      <span id="iface-count" class="text-[#6B8AB0] text-xs"></span>
+    </div>
+    <div class="flex items-center gap-4 text-xs">
+      <span id="conn-status" class="text-[#6B8AB0]">connecting</span>
+      <span class="text-[#3D5070]">|</span>
+      <span class="text-[#6B8AB0]">updated</span>
+      <span id="last-updated" class="text-[#8AABCC] tabular-nums">--:--:--</span>
+    </div>
+  </header>
+
+  <!-- ═══ Main content ══════════════════════════════════════════════════════ -->
+  <main id="app" class="p-3 space-y-4 max-w-screen-2xl mx-auto">
+    <p id="msg" class="text-[#6B8AB0] text-center py-12">Waiting for data…</p>
+  </main>
+
+  <!-- ═══ JavaScript ════════════════════════════════════════════════════════ -->
+  <script>
+  (function () {
+    'use strict';
+
+    // ── DOM refs ──────────────────────────────────────────────────────────
+    const appEl         = document.getElementById('app');
+    const msgEl         = document.getElementById('msg');
+    const ifaceCountEl  = document.getElementById('iface-count');
+    const connStatusEl  = document.getElementById('conn-status');
+    const lastUpdatedEl = document.getElementById('last-updated');
+
+    // ── Formatting helpers ────────────────────────────────────────────────
+
+    /** Safely escape HTML to prevent XSS. */
+    function h(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    /** Format byte counts with SI prefix. Inputs are uint64 (JS number safe
+     *  up to 2^53 ≈ 9 PB, which covers any realistic counter). */
+    function fmtBytes(n) {
+      n = Number(n);
+      if (n >= 1e12) return (n / 1e12).toFixed(3) + ' TB';
+      if (n >= 1e9)  return (n / 1e9 ).toFixed(3) + ' GB';
+      if (n >= 1e6)  return (n / 1e6 ).toFixed(3) + ' MB';
+      if (n >= 1e3)  return (n / 1e3 ).toFixed(1) + ' KB';
+      return n + ' B';
+    }
+
+    /** Format an integer counter with comma grouping. */
+    function fmtNum(n) {
+      return Number(n).toLocaleString('en-US');
+    }
+
+    /** Colour class: green if zero, red otherwise (for drop/error counters). */
+    function dropCls(n) {
+      return Number(n) === 0 ? 'text-[#4DB38A]' : 'text-[#E07070]';
+    }
+
+    /** Format an ISO-8601 timestamp to HH:MM:SS local time. */
+    function fmtTime(iso) {
+      try {
+        return new Date(iso).toLocaleTimeString([], {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        });
+      } catch (_) { return iso || '--'; }
+    }
+
+    // ── Tier-table field groups ───────────────────────────────────────────
+    // Each entry: [group_label, [[field_key, display_label, formatter(tier)]]]
+    // Formatters return HTML strings.
+    const FIELD_GROUPS = [
+      ['Shaping', [
+        ['thresh',   'thresh',    t => h(t.thresh   || '–')],
+        ['target',   'target',    t => h(t.target   || '–')],
+        ['interval', 'interval',  t => h(t.interval || '–')],
+      ]],
+      ['Latency', [
+        ['pk_delay', 'pk_delay',  t => h(t.pk_delay || '–')],
+        ['av_delay', 'av_delay',  t => h(t.av_delay || '–')],
+        ['sp_delay', 'sp_delay',  t => h(t.sp_delay || '–')],
+      ]],
+      ['Queue', [
+        ['backlog',  'backlog',   t => h(t.backlog  || '0b')],
+        ['pkts',     'pkts',      t => fmtNum(t.pkts)],
+        ['bytes',    'bytes',     t => fmtBytes(t.bytes)],
+      ]],
+      ['Hash', [
+        ['way_inds', 'way_inds',  t => fmtNum(t.way_inds)],
+        ['way_miss', 'way_miss',  t => fmtNum(t.way_miss)],
+        ['way_cols', 'way_cols',  t => fmtNum(t.way_cols)],
+      ]],
+      ['Errors', [
+        ['drops',    'drops',     t => `<span class="${dropCls(t.drops)}">${fmtNum(t.drops)}</span>`],
+        ['marks',    'marks',     t => fmtNum(t.marks)],
+        ['ack_drop', 'ack_drop',  t => fmtNum(t.ack_drop)],
+      ]],
+      ['Flows', [
+        ['sp_flows', 'sp_flows',  t => fmtNum(t.sp_flows)],
+        ['bk_flows', 'bk_flows',  t => fmtNum(t.bk_flows)],
+        ['un_flows', 'un_flows',  t => fmtNum(t.un_flows)],
+      ]],
+      ['Misc', [
+        ['max_len',  'max_len',   t => fmtNum(t.max_len)],
+        ['quantum',  'quantum',   t => fmtNum(t.quantum)],
+      ]],
+    ];
+
+    // ── HTML builders ─────────────────────────────────────────────────────
+
+    function buildTierTable(tiers) {
+      if (!tiers || tiers.length === 0) return '';
+      const cols = tiers.length;
+      // Sanity: cap minimum width so the field label column has room.
+      const minW = 160 + cols * 120;
+
+      let rows = '';
+      FIELD_GROUPS.forEach(([groupLabel, fields]) => {
+        fields.forEach(([, label, fmt], fi) => {
+          const isFirst = fi === 0;
+          const topBorder = isFirst ? 'border-t-2 border-t-[#5B9BD5]' : '';
+          const groupTag  = isFirst
+            ? `<span class="block text-[10px] text-[#5B9BD5] leading-tight mb-0.5">${h(groupLabel)}</span>`
+            : '';
+
+          const valueCells = tiers
+            .map(t => `<td class="px-3 py-1 border border-[#3D5070] text-right tabular-nums ${topBorder}">${fmt(t)}</td>`)
+            .join('');
+
+          rows += `
+            <tr>
+              <td class="sticky-col px-3 py-1 border border-[#3D5070] bg-[#1E2D47]
+                         text-[#8AABCC] font-medium whitespace-nowrap ${topBorder}">
+                ${groupTag}${h(label)}
+              </td>
+              ${valueCells}
+            </tr>`;
+        });
+      });
+
+      const tierHeaders = tiers
+        .map(t => `<th class="px-3 py-1.5 border border-[#3D5070] bg-[#162238]
+                               text-[#8AABCC] font-semibold text-right whitespace-nowrap">${h(t.name)}</th>`)
+        .join('');
+
+      return `
+        <div class="overflow-x-auto scroll-thin">
+          <table class="w-full border-collapse text-xs" style="min-width:${minW}px">
+            <thead>
+              <tr>
+                <th class="sticky-col px-3 py-1.5 border border-[#3D5070] bg-[#0F1B2D]
+                            text-[#5B9BD5] font-semibold text-left whitespace-nowrap w-28">Field</th>
+                ${tierHeaders}
+              </tr>
+            </thead>
+            <tbody class="bg-[#1E2D47]">${rows}</tbody>
+          </table>
+        </div>`;
+    }
+
+    function buildIfaceHTML(cs) {
+      const dir      = cs.direction === 'ingress' ? 'INGRESS' : 'EGRESS';
+      const dirCls   = cs.direction === 'ingress' ? 'text-[#5B9BD5]' : 'text-[#4DB38A]';
+
+      // Header row with interface metadata
+      const metaParts = [
+        cs.bandwidth     && `<span class="text-[#6B8AB0]">bw</span> <span>${h(cs.bandwidth)}</span>`,
+        cs.diffserv_mode && `<span class="text-[#6B8AB0]">mode</span> <span>${h(cs.diffserv_mode)}</span>`,
+        cs.rtt           && `<span class="text-[#6B8AB0]">rtt</span> <span>${h(cs.rtt)}</span>`,
+        cs.overhead      && `<span class="text-[#6B8AB0]">overhead</span> <span>${h(cs.overhead)}</span>`,
+        cs.dual_mode     && `<span>${h(cs.dual_mode)}</span>`,
+        cs.nat_enabled   && `<span>nat</span>`,
+        cs.atm_enabled   && `<span>atm</span>`,
+        cs.memlimit      && `<span class="text-[#6B8AB0]">memlimit</span> <span>${h(cs.memlimit)}</span>`,
+      ].filter(Boolean).join('<span class="text-[#3D5070] mx-1">·</span>');
+
+      // Global stats grid — two helper partials
+      const statBox = (label, val, cls = '') =>
+        `<div><span class="text-[#6B8AB0]">${label} </span><span class="${cls || 'text-white'}">${val}</span></div>`;
+
+      const globalGrid = `
+        <div class="px-4 py-2 border-b border-[#3D5070]
+                    grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-8 gap-y-1 text-xs">
+          ${statBox('sent',       fmtBytes(cs.sent_bytes))}
+          ${statBox('pkts',       fmtNum(cs.sent_pkts))}
+          ${statBox('dropped',    fmtNum(cs.dropped),    dropCls(cs.dropped))}
+          ${statBox('overlimits', fmtNum(cs.overlimits))}
+          ${statBox('requeues',   fmtNum(cs.requeues))}
+          ${statBox('backlog',    h(cs.backlog_bytes || '0b') + ' / ' + fmtNum(cs.backlog_pkts) + 'p')}
+          ${cs.memory_used     ? statBox('memory', h(cs.memory_used) + '<span class="text-[#6B8AB0]"> of </span>' + h(cs.memory_total)) : ''}
+          ${cs.capacity_estimate ? statBox('capacity', h(cs.capacity_estimate)) : ''}
+          ${cs.min_net_size    ? statBox('net size', h(cs.min_net_size) + '<span class="text-[#6B8AB0]"> – </span>' + h(cs.max_net_size)) : ''}
+          ${cs.min_adj_size    ? statBox('adj size', h(cs.min_adj_size) + '<span class="text-[#6B8AB0]"> – </span>' + h(cs.max_adj_size)) : ''}
+          ${cs.avg_hdr_offset  ? statBox('hdr offset', h(cs.avg_hdr_offset)) : ''}
+        </div>`;
+
+      return `
+        <div class="bg-[#162238] px-4 py-2 border-b border-[#3D5070]
+                    flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span class="font-bold text-white text-base">${h(cs.interface)}</span>
+          <span class="${dirCls} text-xs font-semibold">[${dir}]</span>
+          <span class="text-xs text-[#8AABCC] flex flex-wrap gap-x-2">${metaParts}</span>
+        </div>
+        ${globalGrid}
+        ${buildTierTable(cs.tiers)}`;
+    }
+
+    // ── DOM update strategy ───────────────────────────────────────────────
+    // Each interface gets a stable <div id="iface-<name>"> so we can do
+    // cheap in-place innerHTML swaps without re-creating the whole document.
+
+    /** Set of currently rendered interface div IDs. */
+    let rendered = new Set();
+
+    function handleData(payload) {
+      const ifaces = Array.isArray(payload.interfaces) ? payload.interfaces : [];
+
+      // Update header bar
+      ifaceCountEl.textContent = ifaces.length === 1
+        ? '1 interface'
+        : `${ifaces.length} interface${ifaces.length === 0 ? 's' : 's'}`;
+      lastUpdatedEl.textContent = fmtTime(payload.updated_at);
+
+      if (ifaces.length === 0) {
+        msgEl.textContent = 'No CAKE interfaces detected.';
+        msgEl.classList.remove('hidden');
+        rendered.forEach(id => { const e = document.getElementById(id); if (e) e.remove(); });
+        rendered.clear();
+        return;
+      }
+      msgEl.classList.add('hidden');
+
+      const newIds = new Set(ifaces.map(cs => 'iface-' + cs.interface));
+
+      // Remove stale cards
+      rendered.forEach(id => {
+        if (!newIds.has(id)) {
+          const el = document.getElementById(id);
+          if (el) el.remove();
+          rendered.delete(id);
+        }
+      });
+
+      // Create or update cards, preserving document order
+      ifaces.forEach((cs, idx) => {
+        const divId = 'iface-' + cs.interface;
+        let card = document.getElementById(divId);
+
+        if (!card) {
+          card = document.createElement('div');
+          card.id    = divId;
+          card.className = 'bg-[#1E2D47] border border-[#3D5070] overflow-hidden';
+          rendered.add(divId);
+
+          // Insert at the correct index (after the msg paragraph)
+          const sibling = appEl.children[idx + 1]; // +1 because msgEl is index 0
+          if (sibling) {
+            appEl.insertBefore(card, sibling);
+          } else {
+            appEl.appendChild(card);
+          }
+        }
+
+        // Always refresh inner HTML to reflect the latest data
+        card.innerHTML = buildIfaceHTML(cs);
+      });
+    }
+
+    // ── SSE connection ────────────────────────────────────────────────────
+
+    function setStatus(text, cls) {
+      connStatusEl.textContent = text;
+      connStatusEl.className   = cls;
+    }
+
+    function connect() {
+      setStatus('connecting', 'text-[#6B8AB0]');
+
+      const es = new EventSource('/events');
+
+      es.onopen = () => setStatus('connected', 'text-[#4DB38A]');
+
+      es.onmessage = e => {
+        try { handleData(JSON.parse(e.data)); }
+        catch (err) { console.error('[cake-stats] parse error', err); }
+      };
+
+      es.onerror = () => {
+        setStatus('reconnecting', 'text-[#E07070]');
+        es.close();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+  }());
+  </script>
+</body>
+</html>

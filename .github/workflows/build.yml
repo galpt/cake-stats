@@ -1,0 +1,185 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auto-tag: bump patch version on every push to main that is not a version bump
+# ──────────────────────────────────────────────────────────────────────────────
+jobs:
+  auto-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    if: >
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          git fetch --tags
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: Increment patch version
+        id: tag
+        run: |
+          LATEST=${{ steps.get_tag.outputs.latest_tag }}
+          VERSION=${LATEST#v}
+          IFS='.' read -ra PARTS <<< "$VERSION"
+          MAJOR=${PARTS[0]:-0}
+          MINOR=${PARTS[1]:-0}
+          PATCH=${PARTS[2]:-0}
+          PATCH=$((PATCH + 1))
+          NEW="v$MAJOR.$MINOR.$PATCH"
+          echo "new_tag=$NEW" >> $GITHUB_OUTPUT
+          echo "New tag: $NEW"
+
+      - name: Push tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.tag.outputs.new_tag }}
+          git push origin ${{ steps.tag.outputs.new_tag }}
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Test: run unit tests before building
+  # ──────────────────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Build: cross-compile for all targets
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    needs: [ auto-tag, test ]
+    if: >
+      always() &&
+      needs.test.result == 'success' &&
+      (needs.auto-tag.result == 'success' || startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - { goos: linux,   goarch: amd64,   name: linux-amd64   }
+          - { goos: linux,   goarch: arm64,   name: linux-arm64   }
+          - { goos: linux,   goarch: arm,     goarm: 7, name: linux-armv7 }
+          - { goos: linux,   goarch: arm,     goarm: 6, name: linux-armv6 }
+          - { goos: linux,   goarch: 386,     name: linux-386     }
+          - { goos: linux,   goarch: mips,    name: linux-mips,    gomips: softfloat }
+          - { goos: linux,   goarch: mipsle,  name: linux-mipsle,  gomips: softfloat }
+          - { goos: linux,   goarch: mips64,  name: linux-mips64  }
+          - { goos: linux,   goarch: mips64le,name: linux-mips64le}
+          # Windows
+          - { goos: windows, goarch: amd64,   name: windows-amd64, ext: .exe }
+          - { goos: windows, goarch: 386,     name: windows-386,   ext: .exe }
+          - { goos: windows, goarch: arm64,   name: windows-arm64, ext: .exe }
+          # FreeBSD (pfSense / OPNsense)
+          - { goos: freebsd, goarch: amd64,   name: freebsd-amd64 }
+          - { goos: freebsd, goarch: arm64,   name: freebsd-arm64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        env:
+          GOOS:        ${{ matrix.goos }}
+          GOARCH:      ${{ matrix.goarch }}
+          GOARM:       ${{ matrix.goarm }}
+          GOMIPS:      ${{ matrix.gomips }}
+          CGO_ENABLED: 0
+        run: |
+          TAG="${{ needs.auto-tag.outputs.new_tag || github.ref_name }}"
+          mkdir -p dist
+          go build \
+            -ldflags "-s -w -X main.Version=${TAG}" \
+            -o "dist/cake-stats-${{ matrix.name }}${{ matrix.ext }}" \
+            .
+
+      - name: Archive
+        run: |
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip  "cake-stats-${{ matrix.name }}.zip" \
+                 "cake-stats-${{ matrix.name }}${{ matrix.ext }}"
+          else
+            tar -czf "cake-stats-${{ matrix.name }}.tar.gz" \
+                     "cake-stats-${{ matrix.name }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cake-stats-${{ matrix.name }}
+          path: dist/cake-stats-${{ matrix.name }}.*
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Release: create a GitHub Release with all binaries attached
+  # ──────────────────────────────────────────────────────────────────────────
+  release:
+    runs-on: ubuntu-latest
+    needs: [ auto-tag, build ]
+    permissions:
+      contents: write
+    if: >
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.auto-tag.result == 'success' || startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.auto-tag.outputs.new_tag || github.ref_name }}
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
