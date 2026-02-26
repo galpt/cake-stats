@@ -43,21 +43,37 @@ func newIfaceState(capacity int, cs *CakeStats) *ifaceState {
 	}
 }
 
-// txBytes returns the sum of per-tier Bytes for cs, falling back to
-// cs.SentBytes when no tier data is available.  Per-tier bytes are
-// preferred because they are taken from the CAKE tier table (small
-// integer values that always parse cleanly) rather than the top-level
-// "Sent X bytes" counter, which can be formatted with SI prefixes on
-// some iproute2/OpenWrt builds and would silently parse as 0.
+// txBytes returns the bytes to use for TX throughput calculation.
+//
+// We use cs.SentBytes (the top-level "Sent X bytes" counter) because it counts
+// actual IP-layer bytes moved through the qdisc.
+//
+// CAKE's per-tier Bytes counters count ATM-cell-padded sizes when "atm overhead
+// N" is configured. A packet is padded to the next multiple of 48 payload bytes
+// (each ATM cell = 5-byte header + 48-byte payload), so CAKE uses the padded
+// size for its internal shaping logic.  Small packets pay disproportionately
+// large overhead: a 64-byte packet pads to 2 cells → 106 bytes (66% overhead),
+// while a 1500-byte packet pads to 32 cells → 1696 bytes (13% overhead).
+//
+// On an ingress IFB interface (e.g. ifb4eth1) typical traffic mixes large
+// download frames with many small TCP ACKs and control packets, so the
+// per-tier byte sum can exceed the nominal bandwidth cap by 10-20%+ in any
+// given second.  This makes the TX throughput chart look wrong/inconsistent
+// compared to an egress interface carrying mostly large packets.
+//
+// SentBytes is always a plain integer in tc -s qdisc output on both mainline
+// Linux and OpenWrt, so there is no SI-prefix parsing risk.
 func txBytes(cs *CakeStats) uint64 {
+	if cs.SentBytes > 0 {
+		return cs.SentBytes
+	}
+	// Fallback: sum per-tier bytes when SentBytes is unavailable (should not
+	// happen in practice but keeps the function safe for edge cases).
 	var sum uint64
 	for _, t := range cs.Tiers {
 		sum += t.Bytes
 	}
-	if sum > 0 {
-		return sum
-	}
-	return cs.SentBytes
+	return sum
 }
 
 // push appends a sample, overwriting the oldest entry when the buffer is full.
