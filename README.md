@@ -167,10 +167,9 @@ sh uninstall.sh --force      # no prompts
 
 - Still polls using `tc`; a kernel‑level rtnetlink watcher is included as an option but not yet the default.
 - No built‑in authentication or HTTPS; expose only on trusted networks or pair with a reverse proxy.
-- UI is intentionally minimal – theme support, additional charts, and accessibility tweaks are on the roadmap.
-- RAM footprint may vary; the few‑megabyte figure above is RSS (resident set size) measured with tools such as `top`/`ps`.  Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.
+- UI is intentionally minimal.
+- RAM footprint may vary.Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.
 - Cross‑platform builds are produced, but CAKE itself is Linux‑only; Windows/FreeBSD binaries do not collect real data.
-- Future enhancements: persistent history storage, per‑flow details, OpenWrt package, and support for other qdiscs.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
