@@ -14,8 +14,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Version is overridden at build-time.
-var Version = "dev"
+// Version is overridden at build-time via -ldflags "-X main.Version=x.y.z".
+var Version = "1.0.0"
 
 func main() {
 	host := flag.String("host", "0.0.0.0", "bind address for web interface")

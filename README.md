@@ -1,6 +1,8 @@
 # cake-stats
 
-Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on Linux/OpenWrt routers.
+Real-time web UI for monitoring [CAKE SQM](https://www.bufferbloat.net/projects/codel/wiki/Cake/) statistics on Linux and OpenWrt routers.
+
+Built for **embedded hardware** where every allocation matters: Fiber v3 keeps HTTP overhead minimal, zerolog emits structured logs with near-zero allocations, and easyjson serves pre-generated serializers so the 100 ms poll loop never touches the GC hot path. The result is a single static binary that streams live per-tier CAKE stats to any browser with negligible CPU and memory cost.
 
 ---
 
@@ -53,7 +55,7 @@ Real-time web UI for monitoring CAKE SQM (Smart Queue Management) statistics on 
 
 ## Status
 
-- Stable — all parser unit tests passing, binary builds clean for 14 target platforms.
+- **v1.0.0** — Stable. All parser unit tests passing, binary builds clean for 14 target platforms.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
@@ -108,13 +110,13 @@ cd cake-stats
 go test ./...          # should print PASS
 # regenerate any easyjson helpers (optional)
 go generate ./...
-go build -o cake-stats .
+go build -ldflags "-s -w -X main.Version=1.0.0" -o cake-stats ./cmd/cake-stats
 ```
 
 Cross-compile for a MIPS OpenWrt router:
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat \
-  go build -ldflags "-s -w" -o cake-stats-linux-mips .
+  go build -ldflags "-s -w -X main.Version=1.0.0" -o cake-stats-linux-mips ./cmd/cake-stats
 ```
 
 Pre-built binaries for all common platforms are attached to every [GitHub Release](https://github.com/galpt/cake-stats/releases).
@@ -168,7 +170,7 @@ sh uninstall.sh --force      # no prompts
 - Still polls using `tc`; a kernel‑level rtnetlink watcher is included as an option but not yet the default.
 - No built‑in authentication or HTTPS; expose only on trusted networks or pair with a reverse proxy.
 - UI is intentionally minimal.
-- RAM footprint may vary.Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.
+- RAM footprint may vary. Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.
 - Cross‑platform builds are produced, but CAKE itself is Linux‑only; Windows/FreeBSD binaries do not collect real data.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
