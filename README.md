@@ -17,6 +17,11 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 - [Design Notes](#design-notes)
 - [Build](#build)
 - [Usage](#usage)
+  - [Quick start](#quick-start)
+  - [Install on OpenWrt](#install-on-openwrt)
+  - [Install on systemd Linux](#install-on-systemd-linux)
+  - [Uninstall](#uninstall)
+  - [API](#api)
 - [Limitations & Next Steps](#limitations--next-steps)
 - [Contributing](#contributing)
 - [License](#license)
@@ -61,7 +66,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 
 ## Features
 
-- Automatically discovers all CAKE qdiscs via `tc -s qdisc`
+- Automatically discovers all CAKE qdiscs via `tc -s qdisc`, including `cake_mq` (multi-queue CAKE introduced in Linux 7.0 and backported to OpenWrt): sub-queue statistics are aggregated into a single logical interface entry so TX throughput, latency and drop graphs work correctly on multi-queue NICs
 - Parses every CAKE field: `thresh`, `target`, `interval`, `pk_delay`, `av_delay`, `sp_delay`, `backlog`, `pkts`, `bytes`, `way_inds`, `way_miss`, `way_cols`, `drops`, `marks`, `ack_drop`, `sp_flows`, `bk_flows`, `un_flows`, `max_len`, `quantum`
 - Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `precedence`; also parses the separate `fwmark MASK` tin-override parameter
 - Two-word tier names are joined correctly (e.g. `"Best Effort"`)
@@ -107,7 +112,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 ```bash
 git clone https://github.com/galpt/cake-stats
 cd cake-stats
-go test ./...          # should print PASS
+go test ./...          # prints ok for each package with tests
 # regenerate any easyjson helpers (optional)
 go generate ./...
 go build -ldflags "-s -w -X main.Version=1.0.0" -o cake-stats ./cmd/cake-stats

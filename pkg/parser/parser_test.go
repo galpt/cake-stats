@@ -231,3 +231,237 @@ func TestParseUint64_Safe(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// cake_mq tests
+//
+// sampleCakeMQOutput simulates the output of "tc -s qdisc" on a system where
+// cake_mq is installed on a two-queue NIC.  The structure is:
+//
+//	qdisc cake_mq 1: dev eth0 root          ← parent (no stats)
+//	qdisc cake 0: dev eth0 parent 1:1 …    ← HW-queue 0 (has stats + tier table)
+//	qdisc cake 0: dev eth0 parent 1:2 …    ← HW-queue 1 (has stats + tier table)
+//
+// The parser must collapse the two sub-queues into one CakeStats entry and
+// aggregate all counters/delays correctly.
+// -----------------------------------------------------------------------------
+const sampleCakeMQOutput = `qdisc cake_mq 1: dev eth0 root refcnt 6 
+qdisc cake 0: dev eth0 parent 1:1 refcnt 2 bandwidth 100Mbit diffserv4 dual-srchost nat nowash no-ack-filter split-gso rtt 100ms atm overhead 48 memlimit 32Mb 
+ Sent 200000000 bytes 700000 pkt (dropped 100, overlimits 1000000 requeues 0) 
+ backlog 0b 0p requeues 0
+ memory used: 100000b of 32Mb
+ capacity estimate: 100Mbit
+ min/max network layer size:           28 /    1500
+ min/max overhead-adjusted size:      106 /    1749
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh       6250Kbit      100Mbit       50Mbit    25000Kbit
+  target          5.8ms          5ms          5ms          5ms
+  interval        101ms        100ms        100ms        100ms
+  pk_delay          0us        400us         20us        500us
+  av_delay          0us         30us          4us         40us
+  sp_delay          0us          3us          1us          1us
+  backlog            0b           0b           0b           0b
+  pkts                0       697000          100         4200
+  bytes               0    201000000        10000       600000
+  way_inds            0        10000            0           10
+  way_miss            0         8000           50          150
+  way_cols            0            0            0            0
+  drops               0          100            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            1
+  bk_flows            0            1            0            0
+  un_flows            0            0            0            0
+  max_len             0        16000          300          400
+  quantum           300         1514          762          381
+
+qdisc cake 0: dev eth0 parent 1:2 refcnt 2 bandwidth 100Mbit diffserv4 dual-srchost nat nowash no-ack-filter split-gso rtt 100ms atm overhead 48 memlimit 32Mb 
+ Sent 250000000 bytes 900000 pkt (dropped 150, overlimits 1200000 requeues 5) 
+ backlog 0b 0p requeues 0
+ memory used: 120000b of 32Mb
+ capacity estimate: 100Mbit
+ min/max network layer size:           28 /    1500
+ min/max overhead-adjusted size:      106 /    1749
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh       6250Kbit      100Mbit       50Mbit    25000Kbit
+  target          5.8ms          5ms          5ms          5ms
+  interval        101ms        100ms        100ms        100ms
+  pk_delay          0us        600us         30us        700us
+  av_delay          0us         50us          6us         60us
+  sp_delay          0us          5us          2us          2us
+  backlog            0b           0b           0b           0b
+  pkts                0       897000          150         6300
+  bytes               0    251000000        15000       900000
+  way_inds            0        15000            0           15
+  way_miss            0        10000           80          200
+  way_cols            0            0            0            0
+  drops               0          150            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            1
+  bk_flows            0            1            0            0
+  un_flows            0            0            0            0
+  max_len             0        24000          400          500
+  quantum           300         1514          762          381
+
+`
+
+// TestCakeMQ_Count verifies that two cake sub-queues under one cake_mq parent
+// are collapsed into a single CakeStats entry.
+func TestCakeMQ_Count(t *testing.T) {
+	results := parseText(sampleCakeMQOutput)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 aggregated CakeStats for cake_mq, got %d", len(results))
+	}
+}
+
+// TestCakeMQ_Identity verifies that identity fields come from the cake_mq
+// parent (handle, interface) while CAKE config is inherited from sub-queues.
+func TestCakeMQ_Identity(t *testing.T) {
+	cs := parseText(sampleCakeMQOutput)[0]
+	assertEqual(t, "interface", "eth0", cs.Interface)
+	assertEqual(t, "handle", "1", cs.Handle)
+	assertEqual(t, "direction", "egress", cs.Direction)
+	assertEqual(t, "bandwidth", "100Mbit", cs.Bandwidth)
+	assertEqual(t, "diffserv_mode", "diffserv4", cs.DiffservMode)
+	assertEqual(t, "rtt", "100ms", cs.RTT)
+	assertEqual(t, "overhead", "48", cs.Overhead)
+	if !cs.NATEnabled {
+		t.Error("nat_enabled should be true")
+	}
+	if !cs.ATMEnabled {
+		t.Error("atm_enabled should be true")
+	}
+}
+
+// TestCakeMQ_GlobalCounters verifies that global counters are summed across
+// all hardware queues.
+func TestCakeMQ_GlobalCounters(t *testing.T) {
+	cs := parseText(sampleCakeMQOutput)[0]
+	assertUint(t, "sent_bytes", 450000000, cs.SentBytes)
+	assertUint(t, "sent_pkts", 1600000, cs.SentPkts)
+	assertUint(t, "dropped", 250, cs.Dropped)
+	assertUint(t, "overlimits", 2200000, cs.Overlimits)
+	assertUint(t, "requeues", 5, cs.Requeues)
+	assertUint(t, "backlog_pkts", 0, cs.BacklogPkts)
+	assertEqual(t, "backlog_bytes", "0b", cs.BacklogBytes)
+	assertEqual(t, "memory_used", "220000b", cs.MemoryUsed)
+	// MemoryTotal is the per-queue limit, kept from the first sub-queue.
+	assertEqual(t, "memory_total", "32Mb", cs.MemoryTotal)
+	assertEqual(t, "capacity_est", "100Mbit", cs.CapacityEst)
+}
+
+// TestCakeMQ_TierCount verifies that four tiers are present after aggregation.
+func TestCakeMQ_TierCount(t *testing.T) {
+	cs := parseText(sampleCakeMQOutput)[0]
+	if len(cs.Tiers) != 4 {
+		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
+	}
+}
+
+// TestCakeMQ_TierCounters verifies that per-tier counters are summed and
+// delay strings reflect the worst-case (maximum) value across queues.
+func TestCakeMQ_TierCounters(t *testing.T) {
+	cs := parseText(sampleCakeMQOutput)[0]
+	be := cs.Tiers[1] // "Best Effort"
+	assertEqual(t, "tier1.name", "Best Effort", be.Name)
+
+	// Counters: queue-1 + queue-2
+	assertUint(t, "be.pkts", 1594000, be.Pkts)
+	assertUint(t, "be.bytes", 452000000, be.Bytes)
+	assertUint(t, "be.drops", 250, be.Drops)
+	assertUint(t, "be.way_inds", 25000, be.WayInds)
+	assertUint(t, "be.way_miss", 18000, be.WayMiss)
+
+	// Delays: maximum across the two queues.
+	assertEqual(t, "be.pk_delay", "600us", be.PkDelay)
+	assertEqual(t, "be.av_delay", "50us", be.AvDelay)
+	assertEqual(t, "be.sp_delay", "5us", be.SpDelay)
+
+	// MaxLen: maximum across the two queues.
+	assertUint(t, "be.max_len", 24000, be.MaxLen)
+
+	// Config: taken from the first sub-queue (shared).
+	assertEqual(t, "be.thresh", "100Mbit", be.Thresh)
+	assertUint(t, "be.quantum", 1514, be.Quantum)
+}
+
+// TestCakeMQ_VoiceTierDelayMax verifies pick-max across queues for Voice tier.
+func TestCakeMQ_VoiceTierDelayMax(t *testing.T) {
+	cs := parseText(sampleCakeMQOutput)[0]
+	voice := cs.Tiers[3]
+	assertEqual(t, "voice.name", "Voice", voice.Name)
+	assertEqual(t, "voice.pk_delay", "700us", voice.PkDelay)
+}
+
+// TestCakeMQ_StandaloneUnaffected verifies that ordinary (non-cake_mq) cake
+// qdiscs in the same tc output are still emitted as independent entries.
+func TestCakeMQ_StandaloneUnaffected(t *testing.T) {
+	combined := sampleCakeMQOutput + sampleTCOutput
+	results := parseText(combined)
+	// cake_mq on eth0 → 1, plus eth1 egress + ifb4eth1 ingress → 2 = 3 total.
+	if len(results) != 3 {
+		t.Fatalf("expected 3 CakeStats entries (1 cake_mq + 2 standalone), got %d", len(results))
+	}
+}
+
+// TestCakeParseDelayUsec exercises the delay-string parser used by aggregation.
+func TestCakeParseDelayUsec(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+	}{
+		{"0us", 0},
+		{"500us", 500},
+		{"1ms", 1000},
+		{"1.5ms", 1500},
+		{"1s", 1e6},
+		{"", 0},
+		{"0", 0},
+	}
+	for _, c := range cases {
+		if got := cakeParseDelayUsec(c.in); got != c.want {
+			t.Errorf("cakeParseDelayUsec(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestParseBytesStr exercises the byte-string parser used in aggregation.
+func TestParseBytesStr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint64
+	}{
+		{"0b", 0},
+		{"100000b", 100000},
+		{"238656b", 238656},
+		{"", 0},
+	}
+	for _, c := range cases {
+		if got := parseBytesStr(c.in); got != c.want {
+			t.Errorf("parseBytesStr(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestHeaderParentHandle exercises the parent-handle extractor.
+func TestHeaderParentHandle(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{"qdisc cake 0: dev eth0 parent 1:1 refcnt 2 bandwidth unlimited", "1"},
+		{"qdisc cake 0: dev eth0 parent 2:3 refcnt 2 bandwidth unlimited", "2"},
+		{"qdisc cake 800d: dev eth1 root refcnt 2 bandwidth 50Mbit", ""},
+		{"qdisc cake_mq 1: dev eth0 root refcnt 6", ""},
+	}
+	for _, c := range cases {
+		if got := headerParentHandle(c.line); got != c.want {
+			t.Errorf("headerParentHandle(%q) = %q, want %q", c.line, got, c.want)
+		}
+	}
+}

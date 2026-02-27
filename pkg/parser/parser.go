@@ -168,13 +168,84 @@ func parseText(raw string) []types.CakeStats {
 	if len(cur.lines) > 0 {
 		blocks = append(blocks, cur)
 	}
-	var result []types.CakeStats
+
+	// Intermediate parse result annotated with routing metadata.
+	type blockResult struct {
+		cs           types.CakeStats
+		parentHandle string // non-empty for cake sub-queues attached to a cake_mq
+		isCakeMQ     bool   // true for the cake_mq parent qdisc block
+	}
+	var parsed []blockResult
+
 	for _, b := range blocks {
-		if len(b.lines) == 0 || !strings.Contains(b.lines[0], "qdisc cake") {
+		if len(b.lines) == 0 {
 			continue
 		}
-		if cs, ok := parseCakeBlock(b.lines); ok {
-			result = append(result, cs)
+		header := b.lines[0]
+		switch {
+		case strings.Contains(header, "qdisc cake_mq "):
+			// cake_mq parent block: parse header only for handle/interface/direction.
+			if cs, ok := parseCakeBlock(b.lines); ok {
+				parsed = append(parsed, blockResult{cs: cs, isCakeMQ: true})
+			}
+		case strings.Contains(header, "qdisc cake "):
+			// Traditional standalone cake OR a cake sub-qdisc under cake_mq.
+			if cs, ok := parseCakeBlock(b.lines); ok {
+				parsed = append(parsed, blockResult{
+					cs:           cs,
+					parentHandle: headerParentHandle(header),
+				})
+			}
+		}
+	}
+
+	// Build a lookup from (interface, major-handle) to the cake_mq parent entry.
+	type ifaceHandle struct{ iface, handle string }
+	mqParents := make(map[ifaceHandle]types.CakeStats)
+	for _, r := range parsed {
+		if r.isCakeMQ {
+			mqParents[ifaceHandle{r.cs.Interface, r.cs.Handle}] = r.cs
+		}
+	}
+
+	// Group cake sub-queue instances by their cake_mq parent key.
+	subQueues := make(map[ifaceHandle][]types.CakeStats)
+	for _, r := range parsed {
+		if !r.isCakeMQ && r.parentHandle != "" {
+			key := ifaceHandle{r.cs.Interface, r.parentHandle}
+			if _, hasMQ := mqParents[key]; hasMQ {
+				subQueues[key] = append(subQueues[key], r.cs)
+			}
+		}
+	}
+
+	// Emit results, preserving original block order.
+	var result []types.CakeStats
+	emittedMQ := make(map[ifaceHandle]bool)
+	for _, r := range parsed {
+		switch {
+		case r.isCakeMQ:
+			key := ifaceHandle{r.cs.Interface, r.cs.Handle}
+			if emittedMQ[key] {
+				continue
+			}
+			emittedMQ[key] = true
+			if subs := subQueues[key]; len(subs) > 0 {
+				result = append(result, aggregateCakeMQSubQueues(r.cs, subs))
+			} else {
+				result = append(result, r.cs)
+			}
+		case r.parentHandle != "":
+			key := ifaceHandle{r.cs.Interface, r.parentHandle}
+			if _, hasMQ := mqParents[key]; hasMQ {
+				// Already aggregated under its cake_mq parent; skip.
+				continue
+			}
+			// Orphaned sub-qdisc (no cake_mq parent visible) – emit verbatim.
+			result = append(result, r.cs)
+		default:
+			// Standalone root cake qdisc.
+			result = append(result, r.cs)
 		}
 	}
 	return result
@@ -236,13 +307,10 @@ func parseHeader(cs *types.CakeStats, line string) {
 	}
 	cs.Handle = strings.TrimSuffix(fs[2], ":")
 	cs.Interface = fs[4]
-	if len(fs) > 5 {
-		if fs[5] == "root" {
-			cs.Direction = "egress"
-		} else {
-			cs.Direction = "ingress"
-		}
-	}
+	// Default to egress; the "ingress" CAKE option keyword overrides this below.
+	// We intentionally do not infer direction from the attachment point (root vs
+	// parent), because cake_mq sub-queues appear as "parent X:N" yet are egress.
+	cs.Direction = "egress"
 	for i := 5; i < len(fs); i++ {
 		tok := fs[i]
 		switch tok {
@@ -293,16 +361,19 @@ func parseSentLine(cs *types.CakeStats, line string) {
 	}
 	s, e := strings.Index(line, "("), strings.Index(line, ")")
 	if s != -1 && e != -1 && e > s {
+		// The content is of the form "dropped N, overlimits M requeues R".
+		// Each comma-separated segment may contain multiple space-separated
+		// key-value pairs (e.g. "overlimits M requeues R").
 		for _, part := range strings.Split(line[s+1:e], ",") {
-			kv := strings.Fields(strings.TrimSpace(part))
-			if len(kv) >= 2 {
-				switch kv[0] {
+			tokens := strings.Fields(strings.TrimSpace(part))
+			for j := 0; j+1 < len(tokens); j += 2 {
+				switch tokens[j] {
 				case "dropped":
-					cs.Dropped = parseUint64(kv[1])
+					cs.Dropped = parseUint64(tokens[j+1])
 				case "overlimits":
-					cs.Overlimits = parseUint64(kv[1])
+					cs.Overlimits = parseUint64(tokens[j+1])
 				case "requeues":
-					cs.Requeues = parseUint64(kv[1])
+					cs.Requeues = parseUint64(tokens[j+1])
 				}
 			}
 		}
@@ -422,4 +493,190 @@ func getUint(m map[string]interface{}, key string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// headerParentHandle extracts the major handle from a "parent X:N" token pair
+// in a tc qdisc header line.  For example, "parent 1:2" returns "1".
+// Returns an empty string when no parent token is present (root qdisc).
+func headerParentHandle(line string) string {
+	fs := strings.Fields(line)
+	for i := 0; i < len(fs)-1; i++ {
+		if fs[i] == "parent" {
+			ref := fs[i+1]
+			if colon := strings.IndexByte(ref, ':'); colon > 0 {
+				return ref[:colon]
+			}
+		}
+	}
+	return ""
+}
+
+// aggregateCakeMQSubQueues merges per-hardware-queue CakeStats from a cake_mq
+// setup into a single logical CakeStats that represents the whole interface.
+//
+// Shared CAKE configuration (bandwidth, diffserv mode, RTT, overhead, NAT/ATM
+// flags, direction) is taken from the first sub-queue, since cake_mq stores one
+// config object that is referenced by all sub-queues.  Identity fields (handle,
+// interface, raw header) come from the cake_mq parent qdisc.  Monotonic
+// counters (bytes sent, packets, drops, …) are summed across queues.  Delay
+// metrics are reported as the maximum across all queues (worst-case latency).
+func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) types.CakeStats {
+	if len(subs) == 0 {
+		return parent
+	}
+	// Bootstrap from first sub-queue to inherit all shared CAKE configuration.
+	agg := subs[0]
+	// Override identity fields with values from the cake_mq parent.
+	agg.Handle = parent.Handle
+	agg.Interface = parent.Interface
+	agg.RawHeader = parent.RawHeader
+	agg.UpdatedAt = parent.UpdatedAt
+	// Direction is determined by the CAKE "ingress" option that lives in the
+	// sub-queue options string, already parsed correctly into agg (= subs[0]).
+
+	// Sum global counters across all sub-queues.
+	agg.SentBytes, agg.SentPkts = 0, 0
+	agg.Dropped, agg.Overlimits, agg.Requeues = 0, 0, 0
+	agg.BacklogPkts = 0
+	var backlogBytes, memUsed uint64
+	for _, s := range subs {
+		agg.SentBytes += s.SentBytes
+		agg.SentPkts += s.SentPkts
+		agg.Dropped += s.Dropped
+		agg.Overlimits += s.Overlimits
+		agg.Requeues += s.Requeues
+		agg.BacklogPkts += s.BacklogPkts
+		backlogBytes += parseBytesStr(s.BacklogBytes)
+		memUsed += parseBytesStr(s.MemoryUsed)
+	}
+	agg.BacklogBytes = fmt.Sprintf("%db", backlogBytes)
+	agg.MemoryUsed = fmt.Sprintf("%db", memUsed)
+	// MemoryTotal is the per-queue limit identical across all queues; keep first.
+
+	// Aggregate per-tier statistics.
+	if len(subs[0].Tiers) > 0 {
+		queueTiers := make([][]types.CakeTier, len(subs))
+		for i, s := range subs {
+			queueTiers[i] = s.Tiers
+		}
+		agg.Tiers = aggregateCakeTiers(queueTiers)
+	}
+	return agg
+}
+
+// parseBytesStr parses a naked byte-count string of the form "1234b" and
+// returns the numeric value.  Returns 0 for empty or unrecognised input.
+func parseBytesStr(s string) uint64 {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "b")
+	v, _ := strconv.ParseUint(s, 10, 64)
+	return v
+}
+
+// aggregateCakeTiers combines per-tier statistics from N cake sub-queues into
+// a single tier slice.  Configuration values (thresh, target, interval,
+// quantum, name) are taken from the first queue since they are shared.  All
+// packet/byte counters are summed.  Delay strings report the maximum across
+// queues (worst-case latency view).  Backlog is summed.
+func aggregateCakeTiers(queues [][]types.CakeTier) []types.CakeTier {
+	if len(queues) == 0 || len(queues[0]) == 0 {
+		return nil
+	}
+	nTiers := len(queues[0])
+	out := make([]types.CakeTier, nTiers)
+	for ti := 0; ti < nTiers; ti++ {
+		// Seed with shared config from the first queue.
+		out[ti] = queues[0][ti]
+		// Zero all mutable counters before summation.
+		out[ti].Pkts = 0
+		out[ti].Bytes = 0
+		out[ti].WayInds = 0
+		out[ti].WayMiss = 0
+		out[ti].WayCols = 0
+		out[ti].Drops = 0
+		out[ti].Marks = 0
+		out[ti].AckDrop = 0
+		out[ti].SpFlows = 0
+		out[ti].BkFlows = 0
+		out[ti].UnFlows = 0
+		out[ti].MaxLen = 0
+		out[ti].Backlog = ""
+		for _, q := range queues {
+			if ti >= len(q) {
+				continue
+			}
+			t := q[ti]
+			out[ti].Pkts += t.Pkts
+			out[ti].Bytes += t.Bytes
+			out[ti].WayInds += t.WayInds
+			out[ti].WayMiss += t.WayMiss
+			out[ti].WayCols += t.WayCols
+			out[ti].Drops += t.Drops
+			out[ti].Marks += t.Marks
+			out[ti].AckDrop += t.AckDrop
+			out[ti].SpFlows += t.SpFlows
+			out[ti].BkFlows += t.BkFlows
+			out[ti].UnFlows += t.UnFlows
+			if t.MaxLen > out[ti].MaxLen {
+				out[ti].MaxLen = t.MaxLen
+			}
+		}
+		// Delays: return the string from whichever queue had the highest value.
+		out[ti].PkDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.PkDelay })
+		out[ti].AvDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.AvDelay })
+		out[ti].SpDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.SpDelay })
+		// Backlog: sum byte values across queues.
+		var backlogSum uint64
+		for _, q := range queues {
+			if ti < len(q) {
+				backlogSum += parseBytesStr(q[ti].Backlog)
+			}
+		}
+		out[ti].Backlog = fmt.Sprintf("%db", backlogSum)
+	}
+	return out
+}
+
+// maxDelayStr returns the delay string with the highest numeric value from the
+// given tier index across all queue tier slices.
+func maxDelayStr(queues [][]types.CakeTier, tierIdx int, field func(types.CakeTier) string) string {
+	var best float64
+	var bestStr string
+	for _, q := range queues {
+		if tierIdx >= len(q) {
+			continue
+		}
+		s := field(q[tierIdx])
+		if v := cakeParseDelayUsec(s); v > best || bestStr == "" {
+			best = v
+			bestStr = s
+		}
+	}
+	return bestStr
+}
+
+// cakeParseDelayUsec converts a CAKE delay string (e.g. "500us", "1.5ms",
+// "2s") to a float64 in microseconds.  Returns 0 for empty or unknown input.
+func cakeParseDelayUsec(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0
+	}
+	for _, sfx := range []string{"us", "ms", "s"} {
+		if strings.HasSuffix(s, sfx) {
+			v, err := strconv.ParseFloat(strings.TrimSuffix(s, sfx), 64)
+			if err != nil {
+				return 0
+			}
+			switch sfx {
+			case "us":
+				return v
+			case "ms":
+				return v * 1e3
+			case "s":
+				return v * 1e6
+			}
+		}
+	}
+	return 0
 }
