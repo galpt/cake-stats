@@ -55,7 +55,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 
 ## Status
 
-- **v1.0.0** — Stable. All parser unit tests passing, binary builds clean for 14 target platforms.
+- Stable — all parser unit tests passing, binary builds clean for 14 target platforms. See [Releases](https://github.com/galpt/cake-stats/releases) for the current version.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
