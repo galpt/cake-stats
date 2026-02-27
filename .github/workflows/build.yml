@@ -41,9 +41,15 @@ jobs:
           LATEST=${{ steps.get_tag.outputs.latest_tag }}
           VERSION=${LATEST#v}
           IFS='.' read -ra PARTS <<< "$VERSION"
-          MAJOR=${PARTS[0]:-0}
+          MAJOR=${PARTS[0]:-1}
           MINOR=${PARTS[1]:-0}
           PATCH=${PARTS[2]:-0}
+          # Enforce minimum major version of 1
+          if [ "$MAJOR" -lt 1 ]; then
+            MAJOR=1
+            MINOR=0
+            PATCH=0
+          fi
           PATCH=$((PATCH + 1))
           NEW="v$MAJOR.$MINOR.$PATCH"
           echo "new_tag=$NEW" >> $GITHUB_OUTPUT
