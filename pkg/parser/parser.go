@@ -414,6 +414,9 @@ var knownTierWords = map[string]bool{
 	"Bulk": true, "Best": true, "Voice": true, "Video": true,
 	"CS1": true, "CS2": true, "CS3": true, "CS4": true,
 	"CS5": true, "CS6": true, "CS7": true, "BE": true,
+	// "Tin" is used by CAKE when running in besteffort mode (single tin = "Tin 0")
+	// and in some diffserv8 configurations ("Tin 0" through "Tin 7").
+	"Tin": true,
 }
 
 func isTierHeaderLine(first string) bool {
@@ -423,10 +426,17 @@ func isTierHeaderLine(first string) bool {
 func parseTierNames(words []string) []string {
 	var names []string
 	for i := 0; i < len(words); i++ {
-		if words[i] == "Best" && i+1 < len(words) && words[i+1] == "Effort" {
+		switch {
+		case words[i] == "Best" && i+1 < len(words) && words[i+1] == "Effort":
+			// "Best Effort" is a two-word tier name used in diffserv4.
 			names = append(names, "Best Effort")
 			i++
-		} else {
+		case words[i] == "Tin" && i+1 < len(words):
+			// "Tin N" is a single tier name used by besteffort (single tin) and
+			// generic diffserv8 configurations.  Treat it as one compound name.
+			names = append(names, "Tin "+words[i+1])
+			i++
+		default:
 			names = append(names, words[i])
 		}
 	}
@@ -564,13 +574,26 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 	return agg
 }
 
-// parseBytesStr parses a naked byte-count string of the form "1234b" and
-// returns the numeric value.  Returns 0 for empty or unrecognised input.
+// parseBytesStr parses a byte-count string emitted by tc (e.g. "238656b",
+// "4097Kb", "32Mb", "1Gb") and returns the value in bytes.
+// Returns 0 for empty or unrecognised input.
 func parseBytesStr(s string) uint64 {
 	s = strings.TrimSpace(s)
-	s = strings.TrimSuffix(s, "b")
-	v, _ := strconv.ParseUint(s, 10, 64)
-	return v
+	switch {
+	case strings.HasSuffix(s, "Gb"):
+		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Gb"), 10, 64)
+		return v * 1024 * 1024 * 1024
+	case strings.HasSuffix(s, "Mb"):
+		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Mb"), 10, 64)
+		return v * 1024 * 1024
+	case strings.HasSuffix(s, "Kb"):
+		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Kb"), 10, 64)
+		return v * 1024
+	default:
+		s = strings.TrimSuffix(s, "b")
+		v, _ := strconv.ParseUint(s, 10, 64)
+		return v
+	}
 }
 
 // aggregateCakeTiers combines per-tier statistics from N cake sub-queues into

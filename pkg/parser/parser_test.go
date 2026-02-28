@@ -409,6 +409,159 @@ func TestCakeMQ_StandaloneUnaffected(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Besteffort (single-tin / "Tin 0") tests — the JackH case:
+// user has CAKE on a single interface (egress only, no IFB) running in
+// besteffort mode.  The tier header is "Tin 0", not the named multi-tier
+// format, so the parser must recognise it and emit correct delay/counter data.
+// -----------------------------------------------------------------------------
+
+const sampleBesteffortOutput = `qdisc noqueue 0: dev lo root refcnt 2 
+ Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc mq 0: dev eth0 root 
+ Sent 2945616358 bytes 1973175 pkt (dropped 0, overlimits 0 requeues 749) 
+ backlog 0b 0p requeues 749
+qdisc cake 8005: dev eth1 root refcnt 17 bandwidth 22500Kbit besteffort triple-isolate nat nowash no-ack-filter split-gso rtt 100ms raw overhead 0 
+ Sent 137306352 bytes 1053588 pkt (dropped 1449, overlimits 1694970 requeues 49) 
+ backlog 0b 0p requeues 49
+ memory used: 4097Kb of 4Mb
+ capacity estimate: 22500Kbit
+ min/max network layer size:           42 /    1514
+ min/max overhead-adjusted size:       42 /    1514
+ average network hdr offset:           14
+
+                  Tin 0
+  thresh      22500Kbit
+  target            5ms
+  interval        100ms
+  pk_delay       3.26ms
+  av_delay       1.21ms
+  sp_delay          4us
+  backlog            0b
+  pkts          1055037
+  bytes       137632238
+  way_inds           86
+  way_miss          274
+  way_cols            0
+  drops            1449
+  marks               0
+  ack_drop            0
+  sp_flows            1
+  bk_flows            1
+  un_flows            0
+  max_len         16654
+  quantum           686
+`
+
+// TestBesteffort_Count verifies that a single-interface egress-only CAKE setup
+// (no IFB, besteffort mode) is detected as exactly one entry.
+func TestBesteffort_Count(t *testing.T) {
+	results := parseText(sampleBesteffortOutput)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 CAKE interface (egress only), got %d", len(results))
+	}
+}
+
+// TestBesteffort_Header verifies that header fields are parsed correctly for a
+// besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
+func TestBesteffort_Header(t *testing.T) {
+	cs := parseText(sampleBesteffortOutput)[0]
+	assertEqual(t, "interface", "eth1", cs.Interface)
+	assertEqual(t, "direction", "egress", cs.Direction)
+	assertEqual(t, "bandwidth", "22500Kbit", cs.Bandwidth)
+	assertEqual(t, "diffserv_mode", "besteffort", cs.DiffservMode)
+	assertEqual(t, "rtt", "100ms", cs.RTT)
+	assertEqual(t, "overhead", "0", cs.Overhead)
+	if !cs.NATEnabled {
+		t.Error("nat_enabled should be true")
+	}
+}
+
+// TestBesteffort_GlobalStats verifies global counters for the besteffort case.
+func TestBesteffort_GlobalStats(t *testing.T) {
+	cs := parseText(sampleBesteffortOutput)[0]
+	assertUint(t, "sent_bytes", 137306352, cs.SentBytes)
+	assertUint(t, "sent_pkts", 1053588, cs.SentPkts)
+	assertUint(t, "dropped", 1449, cs.Dropped)
+	assertUint(t, "overlimits", 1694970, cs.Overlimits)
+	assertUint(t, "requeues", 49, cs.Requeues)
+	assertEqual(t, "capacity_est", "22500Kbit", cs.CapacityEst)
+	assertEqual(t, "memory_used", "4097Kb", cs.MemoryUsed)
+	assertEqual(t, "memory_total", "4Mb", cs.MemoryTotal)
+}
+
+// TestBesteffort_SingleTier verifies that the "Tin 0" tier header is recognised
+// and that all per-tier fields (including delays) are parsed correctly.
+// This is the core fix: before the patch, Tiers was always empty for
+// besteffort mode, causing latency to show as 0 ms permanently.
+func TestBesteffort_SingleTier(t *testing.T) {
+	cs := parseText(sampleBesteffortOutput)[0]
+	if len(cs.Tiers) != 1 {
+		t.Fatalf("expected 1 tier (besteffort = single Tin 0), got %d", len(cs.Tiers))
+	}
+	tin := cs.Tiers[0]
+	assertEqual(t, "tier.name", "Tin 0", tin.Name)
+	assertEqual(t, "tier.thresh", "22500Kbit", tin.Thresh)
+	assertEqual(t, "tier.target", "5ms", tin.Target)
+	assertEqual(t, "tier.pk_delay", "3.26ms", tin.PkDelay)
+	assertEqual(t, "tier.av_delay", "1.21ms", tin.AvDelay)
+	assertEqual(t, "tier.sp_delay", "4us", tin.SpDelay)
+	assertUint(t, "tier.pkts", 1055037, tin.Pkts)
+	assertUint(t, "tier.bytes", 137632238, tin.Bytes)
+	assertUint(t, "tier.way_inds", 86, tin.WayInds)
+	assertUint(t, "tier.way_miss", 274, tin.WayMiss)
+	assertUint(t, "tier.drops", 1449, tin.Drops)
+	assertUint(t, "tier.max_len", 16654, tin.MaxLen)
+	assertUint(t, "tier.quantum", 686, tin.Quantum)
+}
+
+// TestZeroCakeInterfaces verifies that a tc output with no CAKE qdiscs (e.g.
+// a system using fq_codel or mq instead) returns an empty slice rather than
+// panicking or returning nil.
+func TestZeroCakeInterfaces(t *testing.T) {
+	noCakeOutput := `qdisc noqueue 0: dev lo root refcnt 2 
+ Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc mq 0: dev eth0 root 
+ Sent 1000000 bytes 5000 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc fq_codel 0: dev eth0 parent :1 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms memory_limit 32Mb ecn drop_batch 64 
+ Sent 1000000 bytes 5000 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+`
+	results := parseText(noCakeOutput)
+	if len(results) != 0 {
+		t.Fatalf("expected 0 CAKE interfaces (none configured), got %d", len(results))
+	}
+}
+
+// TestParseTierNames_TinFormat verifies that the "Tin N" compound tier name
+// is parsed as a single name, not split into two separate names.
+func TestParseTierNames_TinFormat(t *testing.T) {
+	cases := []struct {
+		words []string
+		want  []string
+	}{
+		{[]string{"Tin", "0"}, []string{"Tin 0"}},
+		{[]string{"Tin", "0", "Tin", "1", "Tin", "2"}, []string{"Tin 0", "Tin 1", "Tin 2"}},
+		{[]string{"Bulk", "Best", "Effort", "Video", "Voice"}, []string{"Bulk", "Best Effort", "Video", "Voice"}},
+		{[]string{"CS1", "CS2", "CS3", "CS4", "CS5", "CS6", "CS7", "BE"}, []string{"CS1", "CS2", "CS3", "CS4", "CS5", "CS6", "CS7", "BE"}},
+	}
+	for _, c := range cases {
+		got := parseTierNames(c.words)
+		if len(got) != len(c.want) {
+			t.Errorf("parseTierNames(%v): got %v, want %v", c.words, got, c.want)
+			continue
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("parseTierNames(%v)[%d]: got %q, want %q", c.words, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
 // TestCakeParseDelayUsec exercises the delay-string parser used by aggregation.
 func TestCakeParseDelayUsec(t *testing.T) {
 	cases := []struct {
@@ -431,6 +584,8 @@ func TestCakeParseDelayUsec(t *testing.T) {
 }
 
 // TestParseBytesStr exercises the byte-string parser used in aggregation.
+// It must handle both raw-byte strings ("Nb"), and the SI-prefix variants
+// that tc emits for memory fields ("NKb", "NMb", "NGb").
 func TestParseBytesStr(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -440,6 +595,11 @@ func TestParseBytesStr(t *testing.T) {
 		{"100000b", 100000},
 		{"238656b", 238656},
 		{"", 0},
+		// SI-prefix variants — seen in tc memory output e.g. "4097Kb of 4Mb"
+		{"4097Kb", 4097 * 1024},
+		{"4Mb", 4 * 1024 * 1024},
+		{"32Mb", 32 * 1024 * 1024},
+		{"1Gb", 1 * 1024 * 1024 * 1024},
 	}
 	for _, c := range cases {
 		if got := parseBytesStr(c.in); got != c.want {
