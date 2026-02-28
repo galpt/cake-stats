@@ -63,9 +63,10 @@ check_deps() {
         log_error "'tc' (iproute2) is required but not found."
         exit 1
     fi
-    if ! command -v wget > /dev/null 2>&1 && \
-       ! command -v curl > /dev/null 2>&1; then
-        log_error "wget or curl is required for downloading."
+    if ! command -v wget        > /dev/null 2>&1 && \
+       ! command -v curl        > /dev/null 2>&1 && \
+       ! command -v uclient-fetch > /dev/null 2>&1; then
+        log_error "A download tool is required (wget, curl, or uclient-fetch) but none were found."
         exit 1
     fi
     log_ok "Dependencies OK"
@@ -124,8 +125,15 @@ download_binary() {
             log_error "Download failed: $url"
             exit 1
         }
-    else
+    elif command -v curl > /dev/null 2>&1; then
         curl -fSL "$url" -o "${tmp_dir}/${name}.tar.gz" || {
+            log_error "Download failed: $url"
+            exit 1
+        }
+    else
+        # uclient-fetch is the built-in downloader on OpenWrt builds that ship
+        # without wget or curl (e.g. apk-based OpenWrt 25.x on the N5105).
+        uclient-fetch -O "${tmp_dir}/${name}.tar.gz" "$url" || {
             log_error "Download failed: $url"
             exit 1
         }
