@@ -50,12 +50,12 @@ type CakeStats struct {
 	// it: "atm" for ATM cell framing (ADSL), "ptm" for PTM encoding (VDSL2),
 	// or "" (empty) when no ATM/PTM compensation is active (noatm / raw).
 	// Replaces the old ATMEnabled bool which collapsed atm and ptm into one.
-	ATMMode      string `json:"atm_mode"`
+	ATMMode string `json:"atm_mode"`
 	// MPU stores the minimum packet unit value when configured (e.g. "84").
 	// Empty string means the mpu parameter was absent or zero.
-	MPU          string `json:"mpu"`
-	MemLimit     string `json:"memlimit"`
-	RawHeader    string `json:"raw_header"`
+	MPU       string `json:"mpu"`
+	MemLimit  string `json:"memlimit"`
+	RawHeader string `json:"raw_header"`
 
 	SentBytes  uint64 `json:"sent_bytes"`
 	SentPkts   uint64 `json:"sent_pkts"`
