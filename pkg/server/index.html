@@ -595,7 +595,8 @@
         cs.overhead      && `<span class="text-[#6B8AB0]">overhead</span> <span>${h(cs.overhead)}</span>`,
         cs.mpu           && `<span class="text-[#6B8AB0]">mpu</span> <span>${h(cs.mpu)}</span>`,
         cs.dual_mode     && `<span>${h(cs.dual_mode)}</span>`,
-        cs.nat_enabled   && `<span>nat</span>`,
+        `<span>${cs.nat_enabled ? 'nat' : 'nonat'}</span>`,
+        `<span>${cs.wash_enabled ? 'wash' : 'nowash'}</span>`,
         cs.atm_mode      && `<span>${h(cs.atm_mode)}</span>`,
         cs.memlimit      && `<span class="text-[#6B8AB0]">memlimit</span> <span>${h(cs.memlimit)}</span>`,
       ].filter(Boolean).join('<span class="text-[#3D5070] mx-1">\u00b7</span>');

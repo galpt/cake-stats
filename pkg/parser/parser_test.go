@@ -630,6 +630,42 @@ func TestParseHeader_AutorateIngress(t *testing.T) {
 	assertEqual(t, "overhead", "22", cs.Overhead)
 }
 
+// TestParseHeader_NATWash verifies that the nat/nonat and wash/nowash keywords
+// are parsed correctly so the dashboard can always display the correct badge.
+func TestParseHeader_NATWash(t *testing.T) {
+	cases := []struct {
+		tokens      string
+		wantNAT     bool
+		wantWash    bool
+	}{
+		{"nat nowash", true, false},
+		{"nat wash", true, true},
+		{"nonat nowash", false, false},
+		{"nonat wash", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.tokens, func(t *testing.T) {
+			snippet := "qdisc cake 8011: dev eth0 root refcnt 2 bandwidth 100Mbit diffserv4 flows " +
+				c.tokens + " rtt 20ms noatm overhead 0\n" +
+				" Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+				" backlog 0b 0p requeues 0\n" +
+				" memory used: 14Kb of 4Mb\n" +
+				" capacity estimate: 100Mbit\n"
+			res := parseText(snippet)
+			if len(res) == 0 {
+				t.Fatal("expected 1 result, got 0")
+			}
+			cs := res[0]
+			if cs.NATEnabled != c.wantNAT {
+				t.Errorf("nat_enabled: want %v, got %v", c.wantNAT, cs.NATEnabled)
+			}
+			if cs.WashEnabled != c.wantWash {
+				t.Errorf("wash_enabled: want %v, got %v", c.wantWash, cs.WashEnabled)
+			}
+		})
+	}
+}
+
 // TestZeroCakeInterfaces verifies that a tc output with no CAKE qdiscs (e.g.
 // a system using fq_codel or mq instead) returns an empty slice rather than
 // panicking or returning nil.

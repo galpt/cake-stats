@@ -77,8 +77,11 @@ func parseJSON(raw []byte) ([]types.CakeStats, error) {
 			if ds, ok := opts["diffserv"].(string); ok {
 				cs.DiffservMode = ds
 			}
-			if nat, ok := opts["nat"].(bool); ok && nat {
-				cs.NATEnabled = true
+			if nat, ok := opts["nat"].(bool); ok {
+				cs.NATEnabled = nat
+			}
+			if wash, ok := opts["wash"].(bool); ok {
+				cs.WashEnabled = wash
 			}
 			// The tc JSON output does not currently emit an "atm" key, but handle
 			// it defensively in case future iproute2 versions add it.
@@ -358,6 +361,12 @@ func parseHeader(cs *types.CakeStats, line string) {
 			cs.DualMode = tok
 		case "nat":
 			cs.NATEnabled = true
+		case "nonat":
+			cs.NATEnabled = false
+		case "wash":
+			cs.WashEnabled = true
+		case "nowash":
+			cs.WashEnabled = false
 		case "dual-srchost", "dual-dsthost", "triple-isolate", "single":
 			cs.DualMode = tok
 		case "ingress":
