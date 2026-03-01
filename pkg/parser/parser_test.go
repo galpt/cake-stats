@@ -471,8 +471,8 @@ func TestBesteffort_Header(t *testing.T) {
 	assertEqual(t, "diffserv_mode", "besteffort", cs.DiffservMode)
 	assertEqual(t, "rtt", "100ms", cs.RTT)
 	assertEqual(t, "overhead", "0", cs.Overhead)
-	// raw/noatm → ATMMode must be empty (no ATM or PTM framing compensation)
-	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	// raw overhead 0 → tc synonym for noatm; ATMMode must be "noatm"
+	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 	// mpu not specified in this header — must be empty
 	assertEqual(t, "mpu", "", cs.MPU)
 	if !cs.NATEnabled {
@@ -552,19 +552,19 @@ func TestParseHeader_PTMMode(t *testing.T) {
 	assertEqual(t, "mpu", "", cs.MPU)
 }
 
-// TestParseHeader_NoATM verifies that the "noatm" keyword leaves ATMMode empty
-// (i.e. the dashboard should not display any ATM/PTM indicator).
+// TestParseHeader_NoATM verifies that the "noatm" keyword stores "noatm" in
+// ATMMode so the dashboard can display it explicitly.
 func TestParseHeader_NoATM(t *testing.T) {
 	cs := parseText(minimalCakeHeader("noatm overhead 0"))[0]
-	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 	assertEqual(t, "overhead", "0", cs.Overhead)
 }
 
-// TestParseHeader_Raw verifies that the "raw" keyword (alias for noatm) also
-// leaves ATMMode empty.
+// TestParseHeader_Raw verifies that "raw" (the tc alias for noatm) normalises
+// to "noatm" so both keywords produce the same dashboard badge.
 func TestParseHeader_Raw(t *testing.T) {
 	cs := parseText(minimalCakeHeader("raw overhead 0"))[0]
-	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 }
 
 // TestParseHeader_MPU verifies that "mpu N" stores the numeric string in MPU
@@ -573,7 +573,7 @@ func TestParseHeader_MPU(t *testing.T) {
 	cs := parseText(minimalCakeHeader("mpu 84 noatm overhead 38"))[0]
 	assertEqual(t, "mpu", "84", cs.MPU)
 	assertEqual(t, "overhead", "38", cs.Overhead)
-	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 }
 
 // TestParseHeader_MPU_WithATM verifies MPU + ATM framing coexist correctly.

@@ -345,8 +345,8 @@ func parseHeader(cs *types.CakeStats, line string) {
 			cs.ATMMode = "atm"
 		case "ptm":
 			cs.ATMMode = "ptm"
-		case "noatm":
-			cs.ATMMode = ""
+		case "noatm", "raw":
+			cs.ATMMode = "noatm"
 		case "mpu":
 			if i+1 < len(fs) {
 				cs.MPU = fs[i+1]
