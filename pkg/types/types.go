@@ -55,9 +55,9 @@ type CakeStats struct {
 	MPU string `json:"mpu"`
 	// WashEnabled is true when CAKE is configured with the "wash" keyword,
 	// which re-marks DSCP on forwarded packets.  False means "nowash".
-	WashEnabled bool `json:"wash_enabled"`
-	MemLimit  string `json:"memlimit"`
-	RawHeader string `json:"raw_header"`
+	WashEnabled bool   `json:"wash_enabled"`
+	MemLimit    string `json:"memlimit"`
+	RawHeader   string `json:"raw_header"`
 
 	SentBytes  uint64 `json:"sent_bytes"`
 	SentPkts   uint64 `json:"sent_pkts"`

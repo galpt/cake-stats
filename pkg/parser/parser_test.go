@@ -634,9 +634,9 @@ func TestParseHeader_AutorateIngress(t *testing.T) {
 // are parsed correctly so the dashboard can always display the correct badge.
 func TestParseHeader_NATWash(t *testing.T) {
 	cases := []struct {
-		tokens      string
-		wantNAT     bool
-		wantWash    bool
+		tokens   string
+		wantNAT  bool
+		wantWash bool
 	}{
 		{"nat nowash", true, false},
 		{"nat wash", true, true},
