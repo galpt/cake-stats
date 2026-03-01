@@ -46,7 +46,14 @@ type CakeStats struct {
 	DualMode     string `json:"dual_mode"`
 	FwmarkMask   string `json:"fwmark_mask"`
 	NATEnabled   bool   `json:"nat_enabled"`
-	ATMEnabled   bool   `json:"atm_enabled"`
+	// ATMMode stores the framing-compensation mode string exactly as tc prints
+	// it: "atm" for ATM cell framing (ADSL), "ptm" for PTM encoding (VDSL2),
+	// or "" (empty) when no ATM/PTM compensation is active (noatm / raw).
+	// Replaces the old ATMEnabled bool which collapsed atm and ptm into one.
+	ATMMode      string `json:"atm_mode"`
+	// MPU stores the minimum packet unit value when configured (e.g. "84").
+	// Empty string means the mpu parameter was absent or zero.
+	MPU          string `json:"mpu"`
 	MemLimit     string `json:"memlimit"`
 	RawHeader    string `json:"raw_header"`
 

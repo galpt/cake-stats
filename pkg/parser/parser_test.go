@@ -111,9 +111,7 @@ func TestParseTCOutput_EgressHeader(t *testing.T) {
 	if !cs.NATEnabled {
 		t.Error("nat_enabled should be true")
 	}
-	if !cs.ATMEnabled {
-		t.Error("atm_enabled should be true")
-	}
+	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
 }
 
 func TestParseTCOutput_EgressGlobalStats(t *testing.T) {
@@ -333,9 +331,7 @@ func TestCakeMQ_Identity(t *testing.T) {
 	if !cs.NATEnabled {
 		t.Error("nat_enabled should be true")
 	}
-	if !cs.ATMEnabled {
-		t.Error("atm_enabled should be true")
-	}
+	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
 }
 
 // TestCakeMQ_GlobalCounters verifies that global counters are summed across
@@ -465,6 +461,8 @@ func TestBesteffort_Count(t *testing.T) {
 
 // TestBesteffort_Header verifies that header fields are parsed correctly for a
 // besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
+// TestBesteffort_Header verifies that header fields are parsed correctly for a
+// besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
 func TestBesteffort_Header(t *testing.T) {
 	cs := parseText(sampleBesteffortOutput)[0]
 	assertEqual(t, "interface", "eth1", cs.Interface)
@@ -473,6 +471,10 @@ func TestBesteffort_Header(t *testing.T) {
 	assertEqual(t, "diffserv_mode", "besteffort", cs.DiffservMode)
 	assertEqual(t, "rtt", "100ms", cs.RTT)
 	assertEqual(t, "overhead", "0", cs.Overhead)
+	// raw/noatm → ATMMode must be empty (no ATM or PTM framing compensation)
+	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	// mpu not specified in this header — must be empty
+	assertEqual(t, "mpu", "", cs.MPU)
 	if !cs.NATEnabled {
 		t.Error("nat_enabled should be true")
 	}
@@ -514,6 +516,118 @@ func TestBesteffort_SingleTier(t *testing.T) {
 	assertUint(t, "tier.drops", 1449, tin.Drops)
 	assertUint(t, "tier.max_len", 16654, tin.MaxLen)
 	assertUint(t, "tier.quantum", 686, tin.Quantum)
+}
+
+// ---------------------------------------------------------------------------
+// Header-field tests: ATM mode, PTM mode, noatm, MPU, flow modes,
+// autorate-ingress.  Each test uses the minimal tc output needed to exercise
+// a specific set of header tokens without importing a full sample.
+// ---------------------------------------------------------------------------
+
+// minimalCakeHeader builds a minimal tc -s qdisc snippet for a cake qdisc on
+// "eth0" with the caller-supplied parameter tokens appended to the first line.
+func minimalCakeHeader(params string) string {
+	return "qdisc cake 8011: dev eth0 root refcnt 2 bandwidth 100Mbit diffserv4 hosts rtt 20ms " + params + "\n" +
+		" Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+		" backlog 0b 0p requeues 0\n" +
+		" memory used: 14Kb of 4Mb\n" +
+		" capacity estimate: 100Mbit\n"
+}
+
+// TestParseHeader_ATMMode verifies that the "atm" keyword sets ATMMode to "atm"
+// and that the overhead value is captured correctly alongside it.
+func TestParseHeader_ATMMode(t *testing.T) {
+	cs := parseText(minimalCakeHeader("atm overhead 40"))[0]
+	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
+	assertEqual(t, "overhead", "40", cs.Overhead)
+	assertEqual(t, "mpu", "", cs.MPU)
+}
+
+// TestParseHeader_PTMMode verifies that the "ptm" keyword sets ATMMode to "ptm"
+// (distinct from "atm") so the dashboard can label it correctly.
+func TestParseHeader_PTMMode(t *testing.T) {
+	cs := parseText(minimalCakeHeader("ptm overhead 30"))[0]
+	assertEqual(t, "atm_mode", "ptm", cs.ATMMode)
+	assertEqual(t, "overhead", "30", cs.Overhead)
+	assertEqual(t, "mpu", "", cs.MPU)
+}
+
+// TestParseHeader_NoATM verifies that the "noatm" keyword leaves ATMMode empty
+// (i.e. the dashboard should not display any ATM/PTM indicator).
+func TestParseHeader_NoATM(t *testing.T) {
+	cs := parseText(minimalCakeHeader("noatm overhead 0"))[0]
+	assertEqual(t, "atm_mode", "", cs.ATMMode)
+	assertEqual(t, "overhead", "0", cs.Overhead)
+}
+
+// TestParseHeader_Raw verifies that the "raw" keyword (alias for noatm) also
+// leaves ATMMode empty.
+func TestParseHeader_Raw(t *testing.T) {
+	cs := parseText(minimalCakeHeader("raw overhead 0"))[0]
+	assertEqual(t, "atm_mode", "", cs.ATMMode)
+}
+
+// TestParseHeader_MPU verifies that "mpu N" stores the numeric string in MPU
+// and that it can coexist with noatm and an explicit overhead.
+func TestParseHeader_MPU(t *testing.T) {
+	cs := parseText(minimalCakeHeader("mpu 84 noatm overhead 38"))[0]
+	assertEqual(t, "mpu", "84", cs.MPU)
+	assertEqual(t, "overhead", "38", cs.Overhead)
+	assertEqual(t, "atm_mode", "", cs.ATMMode)
+}
+
+// TestParseHeader_MPU_WithATM verifies MPU + ATM framing coexist correctly.
+func TestParseHeader_MPU_WithATM(t *testing.T) {
+	cs := parseText(minimalCakeHeader("mpu 64 atm overhead 40"))[0]
+	assertEqual(t, "mpu", "64", cs.MPU)
+	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
+}
+
+// TestParseHeader_FlowModes verifies that each flow-mode keyword is stored in
+// DualMode (or left empty for flowblind which disables flow classification).
+func TestParseHeader_FlowModes(t *testing.T) {
+	cases := []struct {
+		keyword  string
+		wantMode string
+	}{
+		{"flowblind", "flowblind"},
+		{"srchost", "srchost"},
+		{"dsthost", "dsthost"},
+		{"hosts", "hosts"},
+		{"flows", "flows"},
+		{"dual-srchost", "dual-srchost"},
+		{"dual-dsthost", "dual-dsthost"},
+		{"triple-isolate", "triple-isolate"},
+	}
+	for _, c := range cases {
+		t.Run(c.keyword, func(t *testing.T) {
+			snippet := "qdisc cake 8011: dev eth0 root refcnt 2 bandwidth 100Mbit diffserv4 " +
+				c.keyword + " rtt 20ms noatm overhead 0\n" +
+				" Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+				" backlog 0b 0p requeues 0\n" +
+				" memory used: 14Kb of 4Mb\n" +
+				" capacity estimate: 100Mbit\n"
+			res := parseText(snippet)
+			if len(res) == 0 {
+				t.Fatal("expected 1 result, got 0")
+			}
+			assertEqual(t, "dual_mode", c.wantMode, res[0].DualMode)
+		})
+	}
+}
+
+// TestParseHeader_AutorateIngress verifies that "autorate-ingress" is stored
+// as the Bandwidth value (matching what tc prints for ingress-autorate qdiscs).
+func TestParseHeader_AutorateIngress(t *testing.T) {
+	snippet := "qdisc cake 8011: dev ifb4eth0 root refcnt 2 bandwidth autorate-ingress diffserv4 dual-dsthost rtt 20ms noatm overhead 22\n" +
+		" Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+		" backlog 0b 0p requeues 0\n" +
+		" memory used: 14Kb of 4Mb\n" +
+		" capacity estimate: 22000Kbit\n"
+	cs := parseText(snippet)[0]
+	assertEqual(t, "bandwidth", "autorate-ingress", cs.Bandwidth)
+	assertEqual(t, "dual_mode", "dual-dsthost", cs.DualMode)
+	assertEqual(t, "overhead", "22", cs.Overhead)
 }
 
 // TestZeroCakeInterfaces verifies that a tc output with no CAKE qdiscs (e.g.

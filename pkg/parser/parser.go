@@ -80,8 +80,13 @@ func parseJSON(raw []byte) ([]types.CakeStats, error) {
 			if nat, ok := opts["nat"].(bool); ok && nat {
 				cs.NATEnabled = true
 			}
+			// The tc JSON output does not currently emit an "atm" key, but handle
+			// it defensively in case future iproute2 versions add it.
 			if atm, ok := opts["atm"].(string); ok && atm != "" {
-				cs.ATMEnabled = true
+				cs.ATMMode = atm
+			}
+			if v, ok := getUint(opts, "mpu"); ok && v > 0 {
+				cs.MPU = fmt.Sprintf("%d", v)
 			}
 			if ov, ok := opts["overhead"].(float64); ok {
 				cs.Overhead = fmt.Sprintf("%v", int64(ov))
@@ -336,8 +341,21 @@ func parseHeader(cs *types.CakeStats, line string) {
 				cs.Overhead = fs[i+1]
 				i++
 			}
-		case "atm", "ptm":
-			cs.ATMEnabled = true
+		case "atm":
+			cs.ATMMode = "atm"
+		case "ptm":
+			cs.ATMMode = "ptm"
+		case "noatm":
+			cs.ATMMode = ""
+		case "mpu":
+			if i+1 < len(fs) {
+				cs.MPU = fs[i+1]
+				i++
+			}
+		case "autorate-ingress":
+			cs.Bandwidth = "autorate-ingress"
+		case "flowblind", "srchost", "dsthost", "hosts", "flows":
+			cs.DualMode = tok
 		case "nat":
 			cs.NATEnabled = true
 		case "dual-srchost", "dual-dsthost", "triple-isolate", "single":
