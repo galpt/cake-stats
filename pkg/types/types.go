@@ -107,5 +107,3 @@ type StatsResponse struct {
 // HistoryResponse is the serializable representation of the in-memory history
 // store.  It's a map from interface name to an ordered slice of samples.
 type HistoryResponse map[string][]HistorySample
-
-
