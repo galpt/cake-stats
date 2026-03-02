@@ -405,6 +405,95 @@ func TestCakeMQ_StandaloneUnaffected(t *testing.T) {
 	}
 }
 
+// sampleCakeMQIngressOutput simulates an ingress cake_mq on an IFB device
+// (ifb4eth1) where the "ingress" keyword appears only in the cake_mq parent
+// line but NOT in the sub-queue lines.  This models the tc/kernel build
+// variant reported by segal_72 where ifb4eth1 was wrongly shown as [EGRESS].
+// The parser must derive direction from the parent header in this case.
+const sampleCakeMQIngressOutput = `qdisc cake_mq 1: dev ifb4eth1 root refcnt 6 bandwidth 750Mbit diffserv4 flows ingress nonat nowash no-ack-filter split-gso rtt 1ms raw overhead 0 
+qdisc cake 0: dev ifb4eth1 parent 1:1 refcnt 2 bandwidth 750Mbit diffserv4 flows nonat nowash no-ack-filter split-gso rtt 1ms raw overhead 0 
+ Sent 100000000 bytes 300000 pkt (dropped 10, overlimits 500000 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 50000b of 7500000b
+ capacity estimate: 750Mbit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       46 /    1500
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh       46875Kbit      750Mbit      375Mbit   187500Kbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us       11.4ms        7.2ms       2.31ms
+  av_delay          0us       2.77ms        629us        487us
+  sp_delay          0us        250us        161us        188us
+  backlog            0b           0b           0b           0b
+  pkts                7      7284229        20507        53248
+  bytes             448   9000000000     12900000      6400000
+  way_inds            0        42755            0            0
+  way_miss            7         4962         1025          322
+  way_cols            0            0            0            0
+  drops               0       318502            6            3
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0           10            4            4
+  bk_flows            0           27            0            0
+  un_flows            0            0            0            0
+  max_len            74        45420        24830        33325
+  quantum          1514         1514         1514         1514
+
+qdisc cake 0: dev ifb4eth1 parent 1:2 refcnt 2 bandwidth 750Mbit diffserv4 flows nonat nowash no-ack-filter split-gso rtt 1ms raw overhead 0 
+ Sent 50000000 bytes 100000 pkt (dropped 5, overlimits 200000 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 25000b of 7500000b
+ capacity estimate: 750Mbit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       46 /    1500
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh       46875Kbit      750Mbit      375Mbit   187500Kbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us        5.0ms        3.0ms       1.0ms
+  av_delay          0us        1.0ms        200us        150us
+  sp_delay          0us        100us         50us         60us
+  backlog            0b           0b           0b           0b
+  pkts                3         500000        5000        10000
+  bytes             200      500000000      5000000      2000000
+  way_inds            0         10000            0            0
+  way_miss            3          2000          100           50
+  way_cols            0             0            0            0
+  drops               0          1000            1            0
+  marks               0             0            0            0
+  ack_drop            0             0            0            0
+  sp_flows            0             3            1            1
+  bk_flows            0             5            0            0
+  un_flows            0             0            0            0
+  max_len            50         20000        10000         5000
+  quantum          1514          1514         1514         1514
+
+`
+
+// TestCakeMQ_IngressDirection verifies that a cake_mq on an IFB device (ingress)
+// is correctly identified as [INGRESS] even when the sub-queue lines do NOT
+// carry the "ingress" keyword — only the cake_mq parent line carries it.
+// This is the regression test for the segal_72 bug report.
+func TestCakeMQ_IngressDirection(t *testing.T) {
+	results := parseText(sampleCakeMQIngressOutput)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 aggregated CakeStats, got %d", len(results))
+	}
+	cs := results[0]
+	assertEqual(t, "interface", "ifb4eth1", cs.Interface)
+	assertEqual(t, "direction", "ingress", cs.Direction)
+	assertEqual(t, "bandwidth", "750Mbit", cs.Bandwidth)
+	assertEqual(t, "diffserv_mode", "diffserv4", cs.DiffservMode)
+	if len(cs.Tiers) != 4 {
+		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Besteffort (single-tin / "Tin 0") tests — the JackH case:
 // user has CAKE on a single interface (egress only, no IFB) running in

@@ -568,8 +568,20 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 	agg.Interface = parent.Interface
 	agg.RawHeader = parent.RawHeader
 	agg.UpdatedAt = parent.UpdatedAt
-	// Direction is determined by the CAKE "ingress" option that lives in the
-	// sub-queue options string, already parsed correctly into agg (= subs[0]).
+
+	// Direction: the cake_mq parent header line and each sub-queue line both
+	// carry the "ingress" keyword when the qdisc is configured for ingress
+	// (confirmed by kernel selftests in 700-06 OpenWrt patch).  However, some
+	// tc / kernel builds may emit it only in the parent line and not repeat it
+	// in each sub-queue.  Using the parent as the authoritative source avoids
+	// the bug where ifb4eth1 is wrongly shown as [EGRESS]:
+	//   if parent says "ingress" → the entire cake_mq instance is ingress
+	//   if sub-queue says "ingress" → also accept it (belt-and-suspenders)
+	if parent.Direction == "ingress" || agg.Direction == "ingress" {
+		agg.Direction = "ingress"
+	} else {
+		agg.Direction = "egress"
+	}
 
 	// Sum global counters across all sub-queues.
 	agg.SentBytes, agg.SentPkts = 0, 0
