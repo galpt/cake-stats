@@ -755,6 +755,71 @@ func TestParseHeader_NATWash(t *testing.T) {
 	}
 }
 
+// TestCapacityEstimate_ZeroSuppressed verifies that a "0bit" (or any
+// zero-valued) capacity estimate is suppressed so the frontend does not
+// render a confusing "capacity 0bit" badge.
+func TestCapacityEstimate_ZeroSuppressed(t *testing.T) {
+	snippet := "qdisc cake 800d: dev eth0 root refcnt 2 bandwidth 750Mbit diffserv4 flows nonat nowash rtt 1ms raw overhead 0\n" +
+		" Sent 100000 bytes 300 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+		" backlog 0b 0p requeues 0\n" +
+		" memory used: 50000b of 7500000b\n" +
+		" capacity estimate: 0bit\n"
+	cs := parseText(snippet)[0]
+	if cs.CapacityEst != "" {
+		t.Errorf("capacity_estimate should be suppressed for '0bit', got %q", cs.CapacityEst)
+	}
+}
+
+// TestCapacityEstimate_NonZeroKept verifies that real capacity estimates are
+// preserved (e.g. "50Mbit" from a configured hard bandwidth limit).
+func TestCapacityEstimate_NonZeroKept(t *testing.T) {
+	snippet := "qdisc cake 800d: dev eth0 root refcnt 2 bandwidth 50Mbit diffserv4 flows nonat nowash rtt 100ms noatm overhead 0\n" +
+		" Sent 100000 bytes 300 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+		" backlog 0b 0p requeues 0\n" +
+		" memory used: 50000b of 32Mb\n" +
+		" capacity estimate: 50Mbit\n"
+	cs := parseText(snippet)[0]
+	assertEqual(t, "capacity_estimate", "50Mbit", cs.CapacityEst)
+}
+
+// TestBacklogNotOverwrittenByTierTable is a regression test for the switch-case
+// ordering bug: the tier-table "backlog" row (e.g. "backlog 0b 0b 0b 0b")
+// must not overwrite the global BacklogPkts that was already parsed from the
+// "backlog Xb Yp requeues Z" global stats line.
+func TestBacklogNotOverwrittenByTierTable(t *testing.T) {
+	snippet := "qdisc cake 800d: dev eth0 root refcnt 2 bandwidth 100Mbit diffserv4 flows nonat nowash rtt 100ms noatm overhead 0\n" +
+		" Sent 100000 bytes 300 pkt (dropped 0, overlimits 0 requeues 0)\n" +
+		" backlog 150b 12p requeues 0\n" +
+		" memory used: 50000b of 32Mb\n" +
+		" capacity estimate: 100Mbit\n" +
+		" min/max network layer size:           28 /    1500\n" +
+		" min/max overhead-adjusted size:       28 /    1500\n" +
+		" average network hdr offset:           14\n" +
+		"\n" +
+		"                   Bulk  Best Effort        Video        Voice\n" +
+		"  thresh       6250Kbit      100Mbit       50Mbit    25000Kbit\n" +
+		"  target            5ms          5ms          5ms          5ms\n" +
+		"  backlog            0b           0b           0b           0b\n" +
+		"  pkts                0          300            0            0\n" +
+		"  bytes               0       100000            0            0\n" +
+		"  way_inds            0            0            0            0\n" +
+		"  way_miss            0           10            0            0\n" +
+		"  way_cols            0            0            0            0\n" +
+		"  drops               0            0            0            0\n" +
+		"  marks               0            0            0            0\n" +
+		"  ack_drop            0            0            0            0\n" +
+		"  sp_flows            0            1            0            0\n" +
+		"  bk_flows            0            0            0            0\n" +
+		"  un_flows            0            0            0            0\n" +
+		"  max_len             0         1514            0            0\n" +
+		"  quantum           300         1514          762          381\n"
+	cs := parseText(snippet)[0]
+	assertEqual(t, "backlog_bytes", "150b", cs.BacklogBytes)
+	assertUint(t, "backlog_pkts", 12, cs.BacklogPkts)
+	// Tier table's backlog row should NOT have overwritten BacklogPkts.
+	// Before the fix, this would be 0 (overwritten by tier-table "backlog 0b 0b 0b 0b").
+}
+
 // TestZeroCakeInterfaces verifies that a tc output with no CAKE qdiscs (e.g.
 // a system using fq_codel or mq instead) returns an empty slice rather than
 // panicking or returning nil.

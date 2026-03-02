@@ -72,7 +72,12 @@ func parseJSON(raw []byte) ([]types.CakeStats, error) {
 		}
 		if opts, ok := obj["options"].(map[string]interface{}); ok {
 			if bw, ok := opts["bandwidth"].(float64); ok {
-				cs.Bandwidth = fmt.Sprintf("%dbit", int64(bw))
+				if bw > 0 {
+					// JSON bandwidth is in bytes/sec; convert to Mbit/s for display.
+					cs.Bandwidth = fmt.Sprintf("%dMbit", int64(bw)*8/1_000_000)
+				} else {
+					cs.Bandwidth = "unlimited"
+				}
 			}
 			if ds, ok := opts["diffserv"].(string); ok {
 				cs.DiffservMode = ds
@@ -119,8 +124,9 @@ func parseJSON(raw []byte) ([]types.CakeStats, error) {
 		if v, ok := getUint(obj, "memory_limit"); ok {
 			cs.MemoryTotal = fmt.Sprintf("%dMb", v/1024/1024)
 		}
-		if v, ok := getUint(obj, "capacity_estimate"); ok {
-			cs.CapacityEst = fmt.Sprintf("%dMbit", v/1000000)
+		if v, ok := getUint(obj, "capacity_estimate"); ok && v > 0 {
+			// JSON capacity_estimate is in bytes/sec; convert to Mbit/s.
+			cs.CapacityEst = fmt.Sprintf("%dMbit", v*8/1_000_000)
 		}
 		if v, ok := getUint(obj, "min_network_size"); ok {
 			cs.MinNetSize = fmt.Sprintf("%d", v)
@@ -281,6 +287,14 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 			continue
 		}
 		switch {
+		// Tier-table data rows must be checked FIRST so that keywords that also
+		// appear as tier-table row labels (e.g. "backlog") are not accidentally
+		// dispatched to the global-stats parsers once we are inside the table.
+		case inTable && len(fields) >= 2 && unicode.IsLower(rune(fields[0][0])):
+			tierFieldBuf[fields[0]] = fields[1:]
+		case isTierHeaderLine(fields[0]):
+			tierNames = parseTierNames(fields)
+			inTable = true
 		case strings.HasPrefix(trimmed, "Sent "):
 			parseSentLine(&cs, trimmed)
 		case strings.HasPrefix(trimmed, "backlog "):
@@ -288,18 +302,20 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 		case strings.HasPrefix(trimmed, "memory used:"):
 			parseMemoryLine(&cs, trimmed)
 		case strings.HasPrefix(trimmed, "capacity estimate:"):
-			cs.CapacityEst = strings.TrimSpace(strings.TrimPrefix(trimmed, "capacity estimate:"))
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "capacity estimate:"))
+			// Suppress "0bit" (and variants like "0Mbit", "0Kbit") that the
+			// kernel emits before it has measured capacity.  A zero capacity
+			// estimate is not informative; the configured bandwidth ("bw") is
+			// already shown in the header meta-row.
+			if !strings.HasPrefix(v, "0") {
+				cs.CapacityEst = v
+			}
 		case strings.HasPrefix(trimmed, "min/max network layer size:"):
 			cs.MinNetSize, cs.MaxNetSize = parseMinMax(trimmed)
 		case strings.HasPrefix(trimmed, "min/max overhead-adjusted size:"):
 			cs.MinAdjSize, cs.MaxAdjSize = parseMinMax(trimmed)
 		case strings.HasPrefix(trimmed, "average network hdr offset:"):
 			cs.AvgHdrOffset = strings.TrimSpace(strings.TrimPrefix(trimmed, "average network hdr offset:"))
-		case isTierHeaderLine(fields[0]):
-			tierNames = parseTierNames(fields)
-			inTable = true
-		case inTable && len(fields) >= 2 && unicode.IsLower(rune(fields[0][0])):
-			tierFieldBuf[fields[0]] = fields[1:]
 		}
 	}
 	if len(tierNames) > 0 {
