@@ -1,12 +1,11 @@
 package history
 
 import (
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/galpt/cake-stats/pkg/types"
+	"github.com/galpt/cake-stats/pkg/util"
 )
 
 // HistorySample is one time-series data point for a single CAKE interface.
@@ -159,40 +158,9 @@ func (hs *HistoryStore) Snapshot() map[string][]HistorySample {
 func maxDelayMs(tiers []types.CakeTier, field func(types.CakeTier) string) float64 {
 	var best float64
 	for _, t := range tiers {
-		if v := parseDelayMs(field(t)); v > best {
+		if v := util.ParseDelayMs(field(t)); v > best {
 			best = v
 		}
 	}
 	return best
-}
-
-func parseDelayMs(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "0" {
-		return 0
-	}
-	var unit, numStr string
-	for _, sfx := range []string{"us", "ms", "s"} {
-		if strings.HasSuffix(s, sfx) {
-			unit = sfx
-			numStr = strings.TrimSuffix(s, sfx)
-			break
-		}
-	}
-	if unit == "" {
-		return 0
-	}
-	v, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0
-	}
-	switch unit {
-	case "us":
-		return v / 1000.0
-	case "ms":
-		return v
-	case "s":
-		return v * 1000.0
-	}
-	return 0
 }

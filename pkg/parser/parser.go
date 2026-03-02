@@ -11,13 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"github.com/galpt/cake-stats/pkg/types"
+	"github.com/galpt/cake-stats/pkg/util"
 )
 
 var (
@@ -47,7 +47,7 @@ func CollectStats(ctx context.Context) ([]types.CakeStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tc -s qdisc: %w", err)
 	}
-	return parseText(string(out)), nil
+	return parseText(util.BytesToString(out)), nil
 }
 
 // parseJSON handles the JSON output from "tc -j -s qdisc".  We don't try to
@@ -168,7 +168,7 @@ func parseJSON(raw []byte) ([]types.CakeStats, error) {
 }
 
 func parseText(raw string) []types.CakeStats {
-	lines := strings.Split(raw, "\n")
+	lines := util.Split(raw, "\n")
 	type block struct{ lines []string }
 	var blocks []block
 	cur := block{}
@@ -272,17 +272,17 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 		return types.CakeStats{}, false
 	}
 	cs := types.CakeStats{UpdatedAt: time.Now().UTC()}
-	cs.RawHeader = strings.TrimSpace(lines[0])
+	cs.RawHeader = util.TrimSpace(lines[0])
 	parseHeader(&cs, lines[0])
 	var tierNames []string
 	tierFieldBuf := map[string][]string{}
 	inTable := false
 	for i := 1; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := util.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		fields := strings.Fields(trimmed)
+		fields := util.Fields(trimmed)
 		if len(fields) == 0 {
 			continue
 		}
@@ -302,7 +302,7 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 		case strings.HasPrefix(trimmed, "memory used:"):
 			parseMemoryLine(&cs, trimmed)
 		case strings.HasPrefix(trimmed, "capacity estimate:"):
-			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "capacity estimate:"))
+			v := util.AfterColon(trimmed)
 			// Suppress "0bit" (and variants like "0Mbit", "0Kbit") that the
 			// kernel emits before it has measured capacity.  A zero capacity
 			// estimate is not informative; the configured bandwidth ("bw") is
@@ -315,7 +315,7 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 		case strings.HasPrefix(trimmed, "min/max overhead-adjusted size:"):
 			cs.MinAdjSize, cs.MaxAdjSize = parseMinMax(trimmed)
 		case strings.HasPrefix(trimmed, "average network hdr offset:"):
-			cs.AvgHdrOffset = strings.TrimSpace(strings.TrimPrefix(trimmed, "average network hdr offset:"))
+			cs.AvgHdrOffset = util.AfterColon(trimmed)
 		}
 	}
 	if len(tierNames) > 0 {
@@ -325,11 +325,11 @@ func parseCakeBlock(lines []string) (types.CakeStats, bool) {
 }
 
 func parseHeader(cs *types.CakeStats, line string) {
-	fs := strings.Fields(strings.TrimSpace(line))
+	fs := util.Fields(util.TrimSpace(line))
 	if len(fs) < 5 {
 		return
 	}
-	cs.Handle = strings.TrimSuffix(fs[2], ":")
+	cs.Handle = util.TrimSuffix(fs[2], ":")
 	cs.Interface = fs[4]
 	// Default to egress; the "ingress" CAKE option keyword overrides this below.
 	// We intentionally do not infer direction from the attachment point (root vs
@@ -397,26 +397,26 @@ func parseHeader(cs *types.CakeStats, line string) {
 }
 
 func parseSentLine(cs *types.CakeStats, line string) {
-	fs := strings.Fields(line)
+	fs := util.Fields(line)
 	if len(fs) >= 4 {
-		cs.SentBytes = parseUint64(fs[1])
-		cs.SentPkts = parseUint64(fs[3])
+		cs.SentBytes = util.ParseUint64(fs[1])
+		cs.SentPkts = util.ParseUint64(fs[3])
 	}
 	s, e := strings.Index(line, "("), strings.Index(line, ")")
 	if s != -1 && e != -1 && e > s {
 		// The content is of the form "dropped N, overlimits M requeues R".
 		// Each comma-separated segment may contain multiple space-separated
 		// key-value pairs (e.g. "overlimits M requeues R").
-		for _, part := range strings.Split(line[s+1:e], ",") {
-			tokens := strings.Fields(strings.TrimSpace(part))
+		for _, part := range util.Split(line[s+1:e], ",") {
+			tokens := util.Fields(util.TrimSpace(part))
 			for j := 0; j+1 < len(tokens); j += 2 {
 				switch tokens[j] {
 				case "dropped":
-					cs.Dropped = parseUint64(tokens[j+1])
+					cs.Dropped = util.ParseUint64(tokens[j+1])
 				case "overlimits":
-					cs.Overlimits = parseUint64(tokens[j+1])
+					cs.Overlimits = util.ParseUint64(tokens[j+1])
 				case "requeues":
-					cs.Requeues = parseUint64(tokens[j+1])
+					cs.Requeues = util.ParseUint64(tokens[j+1])
 				}
 			}
 		}
@@ -424,16 +424,16 @@ func parseSentLine(cs *types.CakeStats, line string) {
 }
 
 func parseBacklogLine(cs *types.CakeStats, line string) {
-	fs := strings.Fields(line)
+	fs := util.Fields(line)
 	if len(fs) >= 3 {
 		cs.BacklogBytes = fs[1]
-		cs.BacklogPkts = parseUint64(strings.TrimSuffix(fs[2], "p"))
+		cs.BacklogPkts = util.ParseUint64(util.TrimSuffix(fs[2], "p"))
 	}
 }
 
 func parseMemoryLine(cs *types.CakeStats, line string) {
-	after := strings.TrimSpace(strings.TrimPrefix(line, "memory used:"))
-	parts := strings.Fields(after)
+	after := util.AfterColon(line)
+	parts := util.Fields(after)
 	if len(parts) >= 3 {
 		cs.MemoryUsed = parts[0]
 		cs.MemoryTotal = parts[2]
@@ -445,10 +445,10 @@ func parseMinMax(line string) (lo, hi string) {
 	if i == -1 {
 		return
 	}
-	parts := strings.SplitN(strings.TrimSpace(line[i+1:]), "/", 2)
+	parts := util.SplitN(util.TrimSpace(line[i+1:]), "/", 2)
 	if len(parts) == 2 {
-		lo = strings.TrimSpace(parts[0])
-		hi = strings.TrimSpace(parts[1])
+		lo = util.TrimSpace(parts[0])
+		hi = util.TrimSpace(parts[1])
 	}
 	return
 }
@@ -499,7 +499,7 @@ func assembleTiers(names []string, buf map[string][]string) []types.CakeTier {
 		return v[idx]
 	}
 	getU := func(field string, idx int) uint64 {
-		return parseUint64(get(field, idx))
+		return util.ParseUint64(get(field, idx))
 	}
 	for i := range tiers {
 		t := &tiers[i]
@@ -527,22 +527,13 @@ func assembleTiers(names []string, buf map[string][]string) []types.CakeTier {
 	return tiers
 }
 
-func parseUint64(s string) uint64 {
-	s = strings.TrimRight(s, "bBkKmMgGpP")
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
 func getUint(m map[string]interface{}, key string) (uint64, bool) {
 	if v, ok := m[key]; ok {
 		switch t := v.(type) {
 		case float64:
 			return uint64(t), true
 		case string:
-			return parseUint64(t), true
+			return util.ParseUint64(t), true
 		}
 	}
 	return 0, false
@@ -552,7 +543,7 @@ func getUint(m map[string]interface{}, key string) (uint64, bool) {
 // in a tc qdisc header line.  For example, "parent 1:2" returns "1".
 // Returns an empty string when no parent token is present (root qdisc).
 func headerParentHandle(line string) string {
-	fs := strings.Fields(line)
+	fs := util.Fields(line)
 	for i := 0; i < len(fs)-1; i++ {
 		if fs[i] == "parent" {
 			ref := fs[i+1]
@@ -611,8 +602,8 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 		agg.Overlimits += s.Overlimits
 		agg.Requeues += s.Requeues
 		agg.BacklogPkts += s.BacklogPkts
-		backlogBytes += parseBytesStr(s.BacklogBytes)
-		memUsed += parseBytesStr(s.MemoryUsed)
+		backlogBytes += util.ParseBytesStr(s.BacklogBytes)
+		memUsed += util.ParseBytesStr(s.MemoryUsed)
 	}
 	agg.BacklogBytes = fmt.Sprintf("%db", backlogBytes)
 	agg.MemoryUsed = fmt.Sprintf("%db", memUsed)
@@ -627,28 +618,6 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 		agg.Tiers = aggregateCakeTiers(queueTiers)
 	}
 	return agg
-}
-
-// parseBytesStr parses a byte-count string emitted by tc (e.g. "238656b",
-// "4097Kb", "32Mb", "1Gb") and returns the value in bytes.
-// Returns 0 for empty or unrecognised input.
-func parseBytesStr(s string) uint64 {
-	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasSuffix(s, "Gb"):
-		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Gb"), 10, 64)
-		return v * 1024 * 1024 * 1024
-	case strings.HasSuffix(s, "Mb"):
-		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Mb"), 10, 64)
-		return v * 1024 * 1024
-	case strings.HasSuffix(s, "Kb"):
-		v, _ := strconv.ParseUint(strings.TrimSuffix(s, "Kb"), 10, 64)
-		return v * 1024
-	default:
-		s = strings.TrimSuffix(s, "b")
-		v, _ := strconv.ParseUint(s, 10, 64)
-		return v
-	}
 }
 
 // aggregateCakeTiers combines per-tier statistics from N cake sub-queues into
@@ -707,7 +676,7 @@ func aggregateCakeTiers(queues [][]types.CakeTier) []types.CakeTier {
 		var backlogSum uint64
 		for _, q := range queues {
 			if ti < len(q) {
-				backlogSum += parseBytesStr(q[ti].Backlog)
+				backlogSum += util.ParseBytesStr(q[ti].Backlog)
 			}
 		}
 		out[ti].Backlog = fmt.Sprintf("%db", backlogSum)
@@ -725,7 +694,7 @@ func maxDelayStr(queues [][]types.CakeTier, tierIdx int, field func(types.CakeTi
 			continue
 		}
 		s := field(q[tierIdx])
-		if v := cakeParseDelayUsec(s); v > best || bestStr == "" {
+		if v := util.ParseDelayUsec(s); v > best || bestStr == "" {
 			best = v
 			bestStr = s
 		}
@@ -733,28 +702,6 @@ func maxDelayStr(queues [][]types.CakeTier, tierIdx int, field func(types.CakeTi
 	return bestStr
 }
 
-// cakeParseDelayUsec converts a CAKE delay string (e.g. "500us", "1.5ms",
-// "2s") to a float64 in microseconds.  Returns 0 for empty or unknown input.
-func cakeParseDelayUsec(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "0" {
-		return 0
-	}
-	for _, sfx := range []string{"us", "ms", "s"} {
-		if strings.HasSuffix(s, sfx) {
-			v, err := strconv.ParseFloat(strings.TrimSuffix(s, sfx), 64)
-			if err != nil {
-				return 0
-			}
-			switch sfx {
-			case "us":
-				return v
-			case "ms":
-				return v * 1e3
-			case "s":
-				return v * 1e6
-			}
-		}
-	}
-	return 0
-}
+// cakeParseDelayUsec was moved to pkg/util as util.ParseDelayUsec.
+// The canonical implementation lives in util.ParseDelayMs (returns ms) and
+// util.ParseDelayUsec (returns µs); use those directly in all new code.

@@ -2,6 +2,8 @@ package parser
 
 import (
 	"testing"
+
+	"github.com/galpt/cake-stats/pkg/util"
 )
 
 const sampleTCOutput = `qdisc noqueue 0: dev lo root refcnt 2 
@@ -224,7 +226,7 @@ func TestParseUint64_Safe(t *testing.T) {
 		{"abc", 0},
 	}
 	for _, c := range cases {
-		if got := parseUint64(c.in); got != c.want {
+		if got := util.ParseUint64(c.in); got != c.want {
 			t.Errorf("parseUint64(%q)=%d want %d", c.in, got, c.want)
 		}
 	}
@@ -881,7 +883,7 @@ func TestCakeParseDelayUsec(t *testing.T) {
 		{"0", 0},
 	}
 	for _, c := range cases {
-		if got := cakeParseDelayUsec(c.in); got != c.want {
+		if got := util.ParseDelayUsec(c.in); got != c.want {
 			t.Errorf("cakeParseDelayUsec(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
@@ -906,7 +908,7 @@ func TestParseBytesStr(t *testing.T) {
 		{"1Gb", 1 * 1024 * 1024 * 1024},
 	}
 	for _, c := range cases {
-		if got := parseBytesStr(c.in); got != c.want {
+		if got := util.ParseBytesStr(c.in); got != c.want {
 			t.Errorf("parseBytesStr(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
