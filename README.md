@@ -2,7 +2,7 @@
 
 Real-time web UI for monitoring [CAKE SQM](https://www.bufferbloat.net/projects/codel/wiki/Cake/) statistics on Linux and OpenWrt routers.
 
-Built for **embedded hardware** where every allocation matters: Fiber v3 keeps HTTP overhead minimal, zerolog emits structured logs with near-zero allocations, and easyjson serves pre-generated serializers so the 100 ms poll loop never touches the GC hot path. The result is a single static binary that streams live per-tier CAKE stats to any browser with negligible CPU and memory cost.
+Built for **embedded hardware** where every allocation matters: Fiber v3 keeps HTTP overhead minimal, zerolog emits structured logs with near-zero allocations, and a dedicated `pkg/util` package centralises all allocation-heavy string operations so they can be audited and swapped in one place. The result is a single static binary that streams live per-tier CAKE stats to any browser with negligible CPU and memory cost.
 
 ---
 
@@ -71,7 +71,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 - Correctly handles diffserv modes: `diffserv3`, `diffserv4`, `diffserv8`, `besteffort`, `precedence`; also parses the separate `fwmark MASK` tin-override parameter
 - Two-word tier names are joined correctly (e.g. `"Best Effort"`)
 - Real-time push via **Server-Sent Events** — no WebSocket, no polling jitter
-- Built on Fiber v3 with zerolog for structured logs and easyjson pre-generated serializers
+- Built on Fiber v3 with zerolog for structured logs
 - Default poll interval 100ms for near-instant UI updates (adjustable via `-interval`)
 - Single static binary — no runtime dependencies
 - Web UI: dark TUI aesthetic (`#2D3C59` bg, JetBrains Mono, zero hover animations)
@@ -89,21 +89,21 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 - Third-party libraries used during build/services:
   - [Fiber v3](https://gofiber.io/) – HTTP framework
   - [zerolog](https://github.com/rs/zerolog) – structured logging
-  - [easyjson](https://github.com/mailru/easyjson) – JSON code generation
+  - [easyjson](https://github.com/mailru/easyjson) – JSON code generation (listed in `go.mod`; `types.go` carries a `//go:generate easyjson -all` directive for future use, but generated files are not checked in — the package currently ships a hand-written `MarshalJSON` that mirrors easyjson output)
   - [rtnetlink](https://github.com/jsimonetti/rtnetlink) – optional netlink client (not currently used; included in go.mod for future event‑based polling)
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
 ## Design Notes
 
-- **Modular architecture**: code is split into `pkg/parser`, `pkg/history`, `pkg/server`, `pkg/log`, and `pkg/types`, with the CLI entrypoint under `cmd/cake-stats`.  This keeps the core logic reusable and simplifies testing.
-- **Zero-allocation philosophy**: hot paths avoid heap allocations by using `sync.Pool` for temporary buffers, `easyjson`-generated marshalers, and pre‑computed byte slices.  Benchmark-driven optimisations ensure the 100 ms poll loop runs with minimal GC pressure.
+- **Modular architecture**: code is split into `pkg/parser`, `pkg/history`, `pkg/server`, `pkg/log`, `pkg/types`, and `pkg/util`, with the CLI entrypoint under `cmd/cake-stats`.  `pkg/util` centralises all allocation-heavy string/byte helpers (split, trim, parse, zero-copy byte↔string conversions) so every other package imports one place instead of duplicating `strconv`/`strings` call sites.  This keeps the core logic reusable and simplifies testing.
+- **Zero-allocation philosophy**: hot paths avoid heap allocations by using `sync.Pool` for temporary buffers, a hand-written `MarshalJSON` that mirrors the pattern easyjson would generate, zero-copy `unsafe`-backed byte↔string conversions in `pkg/util`, and pre‑computed byte slices.  The 100 ms poll loop is designed to run with minimal GC pressure.
 - **Ring buffer history**: a thread-safe circular buffer stores past snapshots; clients receive both current data and historical samples after reconnects or page loads.
 - **Polling strategy**: defaults to 100 ms for near-instant updates; interval is command-line configurable.  The codebase contains scaffolding and a placeholder comment for an optional rtnetlink-based watcher, but the current release still relies on regular `tc` invocations.
 - **Server-Sent Events**: statistics are broadcast over SSE.  A pool of reusable message buffers reduces allocations when many clients connect.
 - **Fiber & zerolog**: Fiber v3 provides a lightweight HTTP server with built‑in recovery middleware; zerolog supplies compact, structured log output.
 - **Single static binary**: the project builds to one statically-linked executable, suitable for OpenWrt.
-- **Testing and documentation**: parser and history packages include unit tests and benchmarks.  Dependencies are kept to a minimum to ease audits.
+- **Testing and documentation**: `pkg/parser`, `pkg/history`, and `pkg/util` include unit tests; `pkg/history` also includes a benchmark (`BenchmarkHistoryRecord`).  Dependencies are kept to a minimum to ease audits.
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
@@ -113,7 +113,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 git clone https://github.com/galpt/cake-stats
 cd cake-stats
 go test ./...          # prints ok for each package with tests
-# regenerate any easyjson helpers (optional)
+# optional: regenerate easyjson helpers (requires `go install github.com/mailru/easyjson/...@latest`)
 go generate ./...
 go build -ldflags "-s -w -X main.Version=1.0.0" -o cake-stats ./cmd/cake-stats
 ```
