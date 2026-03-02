@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	easyjson "github.com/mailru/easyjson"
+
 	fiber "github.com/gofiber/fiber/v3"
 	recovermiddleware "github.com/gofiber/fiber/v3/middleware/recover"
 
@@ -100,7 +102,7 @@ func (s *Server) runPoller(ctx context.Context) {
 
 func (s *Server) broadcast(stats []types.CakeStats) {
 	resp := types.StatsResponse{Interfaces: stats, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-	payload, _ := resp.MarshalJSON()
+	payload, _ := easyjson.Marshal(&resp)
 	event := buildSSEEvent(payload)
 
 	s.ssesMu.Lock()
@@ -139,7 +141,7 @@ func (s *Server) handleAPIStats(c fiber.Ctx) error {
 	s.statsMu.RUnlock()
 	resp := types.StatsResponse{Interfaces: snapshot, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	c.Set("Content-Type", "application/json; charset=utf-8")
-	b, _ := resp.MarshalJSON()
+	b, _ := easyjson.Marshal(&resp)
 	return c.Send(b)
 }
 
@@ -180,7 +182,7 @@ func (s *Server) handleSSE(c fiber.Ctx) error {
 				Interfaces: snapshot,
 				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 			}
-			if payload, err := resp.MarshalJSON(); err == nil {
+			if payload, err := easyjson.Marshal(&resp); err == nil {
 				if _, err = w.Write(buildSSEEvent(payload)); err != nil {
 					return
 				}

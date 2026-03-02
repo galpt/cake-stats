@@ -1,9 +1,6 @@
 package types
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 //go:generate easyjson -all
 
@@ -111,35 +108,4 @@ type StatsResponse struct {
 // store.  It's a map from interface name to an ordered slice of samples.
 type HistoryResponse map[string][]HistorySample
 
-// MarshalJSON implements json.Marshaler using a manually allocated buffer.
-// It mirrors the allocation behaviour that easyjson would produce; we
-// include it here so the repository can build without requiring codegen.
-// In a real release, run `go generate ./...` to produce optimized functions.
-func (r StatsResponse) MarshalJSON() ([]byte, error) {
-	// simple manual serialization without allocations beyond the returned
-	// slice.  It is not completely zero-allocation but avoids intermediate
-	// maps and strings.
-	buf := make([]byte, 0, 256)
-	buf = append(buf, '{')
-	buf = append(buf, `"interfaces":`...)
-	// marshal interfaces using json.Marshal (cheap for slice)
-	if v, err := jsonMarshal(r.Interfaces); err == nil {
-		buf = append(buf, v...)
-	} else {
-		return nil, err
-	}
-	buf = append(buf, ',')
-	buf = append(buf, `"updated_at":`...)
-	buf = append(buf, '"')
-	buf = append(buf, r.UpdatedAt...)
-	buf = append(buf, '"')
-	buf = append(buf, '}')
-	return buf, nil
-}
 
-// jsonMarshal is a thin wrapper around the stdlib json package.  It's defined
-// here so the StatsResponse.MarshalJSON method can reference it without
-// creating an import cycle.
-func jsonMarshal(v any) ([]byte, error) {
-	return json.Marshal(v)
-}

@@ -8,23 +8,12 @@ import (
 	"github.com/galpt/cake-stats/pkg/util"
 )
 
-// HistorySample is one time-series data point for a single CAKE interface.
-// All numeric values are float64 so they can be directly consumed by charting
-// libraries (uPlot, Chart.js, etc.).
-type HistorySample struct {
-	T  int64   `json:"t"`
-	Tx float64 `json:"tx"`
-	Av float64 `json:"av"`
-	Pk float64 `json:"pk"`
-	Dr float64 `json:"dr"`
-}
-
 // ifaceState tracks per-interface counters and the ring buffer.
 type ifaceState struct {
 	prevTxBytes uint64
 	prevDropped uint64
 	prevTime    time.Time
-	samples     []HistorySample
+	samples     []types.HistorySample
 	head        int
 	count       int
 }
@@ -34,7 +23,7 @@ func newIfaceState(capacity int, cs *types.CakeStats) *ifaceState {
 		prevTxBytes: txBytes(cs),
 		prevDropped: cs.Dropped,
 		prevTime:    time.Now(),
-		samples:     make([]HistorySample, capacity),
+		samples:     make([]types.HistorySample, capacity),
 	}
 }
 
@@ -49,7 +38,7 @@ func txBytes(cs *types.CakeStats) uint64 {
 	return sum
 }
 
-func (st *ifaceState) push(s HistorySample, capacity int) {
+func (st *ifaceState) push(s types.HistorySample, capacity int) {
 	st.samples[st.head] = s
 	st.head = (st.head + 1) % capacity
 	if st.count < capacity {
@@ -57,11 +46,11 @@ func (st *ifaceState) push(s HistorySample, capacity int) {
 	}
 }
 
-func (st *ifaceState) ordered(capacity int) []HistorySample {
+func (st *ifaceState) ordered(capacity int) []types.HistorySample {
 	if st.count == 0 {
 		return nil
 	}
-	out := make([]HistorySample, st.count)
+	out := make([]types.HistorySample, st.count)
 	if st.count < capacity {
 		copy(out, st.samples[:st.count])
 	} else {
@@ -120,7 +109,7 @@ func (hs *HistoryStore) Record(stats []types.CakeStats, interval time.Duration) 
 		cs.DropsPerS = drRate
 		cs.MaxAvDelayMs = avMs
 		cs.MaxPkDelayMs = pkMs
-		st.push(HistorySample{
+		st.push(types.HistorySample{
 			T:  now.Unix(),
 			Tx: txRate,
 			Av: avMs,
@@ -143,10 +132,10 @@ func (hs *HistoryStore) Record(stats []types.CakeStats, interval time.Duration) 
 	}
 }
 
-func (hs *HistoryStore) Snapshot() map[string][]HistorySample {
+func (hs *HistoryStore) Snapshot() types.HistoryResponse {
 	hs.mu.RLock()
 	defer hs.mu.RUnlock()
-	out := make(map[string][]HistorySample, len(hs.ifaces))
+	out := make(types.HistoryResponse, len(hs.ifaces))
 	for key, st := range hs.ifaces {
 		if samples := st.ordered(hs.capacity); len(samples) > 0 {
 			out[key] = samples
