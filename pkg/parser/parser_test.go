@@ -931,3 +931,236 @@ func TestHeaderParentHandle(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IFB direction fallback tests (segal_72 regression)
+//
+// Some tc / kernel builds do NOT emit the "ingress" keyword in the qdisc
+// header even when CAKE is running on an IFB device.  The parser must infer
+// direction = ingress from the interface name in that case.
+// ---------------------------------------------------------------------------
+
+// TestStandaloneCake_IFB_NoIngressKeyword verifies that a standalone cake
+// qdisc on an IFB interface is labelled [INGRESS] even when the "ingress"
+// keyword is absent from the header line.
+func TestStandaloneCake_IFB_NoIngressKeyword(t *testing.T) {
+	snippet := "qdisc cake 800e: dev ifb4eth0 root refcnt 2 bandwidth 100Mbit diffserv4 dual-dsthost nonat nowash no-ack-filter split-gso rtt 100ms noatm overhead 0\n" +
+		" Sent 3194029040 bytes 2748544 pkt (dropped 28962, overlimits 3328299 requeues 0)\n" +
+		" backlog 0b 0p requeues 0\n" +
+		" memory used: 1425600b of 32Mb\n" +
+		" capacity estimate: 100Mbit\n"
+	cs := parseText(snippet)
+	if len(cs) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(cs))
+	}
+	assertEqual(t, "interface", "ifb4eth0", cs[0].Interface)
+	assertEqual(t, "direction", "ingress", cs[0].Direction)
+}
+
+// sampleSegal72Output models the real tc output reported by segal_72:
+// cake_mq on ifb4eth1 with 4 hardware queues, bandwidth 650Mbit, and
+// NO "ingress" keyword anywhere in parent or sub-queue headers.
+// This is the exact bug that caused ifb4eth1 to be shown as [EGRESS].
+const sampleSegal72Output = `qdisc cake_mq 803a: dev ifb4eth1 root refcnt 6 bandwidth 650Mbit diffserv4 flows nat nowash no-ack-filter split-gso rtt 20ms noatm overhead 4 mpu 84
+ Sent 2556898768 bytes 2425974 pkt (dropped 125092, overlimits 3080054 requeues 0)
+ backlog 0b 0p requeues 0
+qdisc cake 0: dev ifb4eth1 parent 803a:4 refcnt 2 bandwidth 650Mbit diffserv4 flows nat nowash no-ack-filter split-gso rtt 20ms noatm overhead 4 mpu 84
+ Sent 631838897 bytes 581902 pkt (dropped 33222, overlimits 723738 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 3264768b of 6500000b
+ capacity estimate: 0bit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       84 /    1504
+ active queues:                         1
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh      40625Kbit      650Mbit   162500Kbit      650Mbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us         77us         68us         20us
+  av_delay          0us          9us          5us          1us
+  sp_delay          0us          1us          1us          1us
+  backlog            0b           0b           0b           0b
+  pkts                0       614870          105          149
+  bytes               0    682074289        36230        21688
+  way_inds            0            0            0            0
+  way_miss            0          151           18            9
+  way_cols            0            0            0            0
+  drops               0        33222            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            1
+  bk_flows            0            1            0            0
+  un_flows            0            0            0            0
+  max_len             0        34822         2584          285
+  quantum          1239         1514         1514         1514
+
+qdisc cake 0: dev ifb4eth1 parent 803a:3 refcnt 2 bandwidth 650Mbit diffserv4 flows nat nowash no-ack-filter split-gso rtt 20ms noatm overhead 4 mpu 84
+ Sent 760175966 bytes 920414 pkt (dropped 42417, overlimits 1234834 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 5241600b of 6500000b
+ capacity estimate: 0bit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       84 /    1504
+ active queues:                         2
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh      40625Kbit      325Mbit   162500Kbit   216666Kbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us         43us        108us          6us
+  av_delay          0us          5us          8us          0us
+  sp_delay          0us          0us          1us          0us
+  backlog            0b           0b           0b           0b
+  pkts                0       962565          252           14
+  bytes               0    824311205        75735         2629
+  way_inds            0            0            0            0
+  way_miss            0          118           26            8
+  way_cols            0            0            0            0
+  drops               0        42417            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            0
+  bk_flows            0            0            0            0
+  un_flows            0            0            0            0
+  max_len             0        36336         2168          415
+  quantum          1239         1514         1514         1514
+
+qdisc cake 0: dev ifb4eth1 parent 803a:2 refcnt 2 bandwidth 650Mbit diffserv4 flows nat nowash no-ack-filter split-gso rtt 20ms noatm overhead 4 mpu 84
+ Sent 669378520 bytes 542353 pkt (dropped 35865, overlimits 708234 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 6609408b of 6500000b
+ capacity estimate: 0bit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       84 /    1504
+ active queues:                         3
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh      40625Kbit      325Mbit   162500Kbit   216666Kbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us         43us        234us        173us
+  av_delay          0us          8us         36us         10us
+  sp_delay          0us          1us          2us          2us
+  backlog            0b           0b           0b           0b
+  pkts                0       578780          187           48
+  bytes               0    723652284       187171        41432
+  way_inds            0            0            0            0
+  way_miss            0          121           10            5
+  way_cols            0            0            0            0
+  drops               0        35865            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            0
+  bk_flows            0            1            0            0
+  un_flows            0            0            0            0
+  max_len             0        39364        14741        11628
+  quantum          1239         1514         1514         1514
+
+qdisc cake 0: dev ifb4eth1 parent 803a:1 refcnt 2 bandwidth 650Mbit diffserv4 flows nat nowash no-ack-filter split-gso rtt 20ms noatm overhead 4 mpu 84
+ Sent 495505385 bytes 381305 pkt (dropped 13588, overlimits 413248 requeues 0)
+ backlog 0b 0p requeues 0
+ memory used: 2163200b of 6500000b
+ capacity estimate: 0bit
+ min/max network layer size:           46 /    1500
+ min/max overhead-adjusted size:       84 /    1504
+ active queues:                         1
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh      40625Kbit   162500Kbit      325Mbit   162500Kbit
+  target            1ms          1ms          1ms          1ms
+  interval         20ms         20ms         20ms         20ms
+  pk_delay          0us         47us         66us         13us
+  av_delay          0us          6us          2us          2us
+  sp_delay          0us          1us          1us          0us
+  backlog            0b           0b           0b           0b
+  pkts                0       388264           50         8819
+  bytes               0    515675702        25430       535115
+  way_inds            0            0            0            0
+  way_miss            0          130            8            6
+  way_cols            0            0            0            0
+  drops               0        13588            0            0
+  marks               0            0            0            0
+  ack_drop            0            0            0            0
+  sp_flows            0            1            0            0
+  bk_flows            0            1            0            0
+  un_flows            0            0            0            0
+  max_len             0        34822         5288         2932
+  quantum          1239         1514         1514         1514
+
+`
+
+// TestSegal72_CakeMQIFBDirection is the core regression test for the bug
+// reported by segal_72 on the OpenWrt forum: cake_mq on ifb4eth1 with 4
+// hardware queues, no "ingress" keyword in any qdisc header line.
+// The interface must still be labelled [INGRESS] and all 4 sub-queues must be
+// aggregated into one CakeStats entry with correct counters.
+func TestSegal72_CakeMQIFBDirection(t *testing.T) {
+	results := parseText(sampleSegal72Output)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 aggregated CakeStats, got %d", len(results))
+	}
+	cs := results[0]
+
+	// Identity
+	assertEqual(t, "interface", "ifb4eth1", cs.Interface)
+	assertEqual(t, "handle", "803a", cs.Handle)
+	// Direction must be "ingress" derived from IFB name — not from keyword.
+	assertEqual(t, "direction", "ingress", cs.Direction)
+
+	// Shared CAKE config inherited from first sub-queue
+	assertEqual(t, "bandwidth", "650Mbit", cs.Bandwidth)
+	assertEqual(t, "diffserv_mode", "diffserv4", cs.DiffservMode)
+	assertEqual(t, "rtt", "20ms", cs.RTT)
+	assertEqual(t, "overhead", "4", cs.Overhead)
+	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
+	assertEqual(t, "mpu", "84", cs.MPU)
+	if !cs.NATEnabled {
+		t.Error("nat_enabled should be true")
+	}
+	if cs.WashEnabled {
+		t.Error("wash_enabled should be false (nowash)")
+	}
+
+	// capacity_estimate: all sub-queues report "0bit" → must be suppressed
+	if cs.CapacityEst != "" {
+		t.Errorf("capacity_estimate should be suppressed (all 0bit), got %q", cs.CapacityEst)
+	}
+
+	// Summed global counters across 4 sub-queues
+	// bytes: 631838897 + 760175966 + 669378520 + 495505385 = 2556898768
+	assertUint(t, "sent_bytes", 2556898768, cs.SentBytes)
+	// pkts:  581902 + 920414 + 542353 + 381305 = 2425974
+	assertUint(t, "sent_pkts", 2425974, cs.SentPkts)
+	// drops: 33222 + 42417 + 35865 + 13588 = 125092
+	assertUint(t, "dropped", 125092, cs.Dropped)
+	// overlimits: 723738 + 1234834 + 708234 + 413248 = 3080054
+	assertUint(t, "overlimits", 3080054, cs.Overlimits)
+
+	// Memory: sum of all sub-queue memory_used values
+	// 3264768 + 5241600 + 6609408 + 2163200 = 17278976
+	assertEqual(t, "memory_used", "17278976b", cs.MemoryUsed)
+
+	// Tiers
+	if len(cs.Tiers) != 4 {
+		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
+	}
+	be := cs.Tiers[1] // Best Effort
+	assertEqual(t, "be.name", "Best Effort", be.Name)
+	// pkts: 614870 + 962565 + 578780 + 388264 = 2544479
+	assertUint(t, "be.pkts", 2544479, be.Pkts)
+	// drops: 33222 + 42417 + 35865 + 13588 = 125092
+	assertUint(t, "be.drops", 125092, be.Drops)
+	// pk_delay: max(77us, 43us, 43us, 47us) = 77us
+	assertEqual(t, "be.pk_delay", "77us", be.PkDelay)
+	// max_len: max(34822, 36336, 39364, 34822) = 39364
+	assertUint(t, "be.max_len", 39364, be.MaxLen)
+
+	video := cs.Tiers[2] // Video
+	// pk_delay: max(68us, 108us, 234us, 66us) = 234us
+	assertEqual(t, "video.pk_delay", "234us", video.PkDelay)
+}

@@ -394,6 +394,15 @@ func parseHeader(cs *types.CakeStats, line string) {
 			}
 		}
 	}
+	// An IFB (Intermediate Functional Block) interface is always used to
+	// redirect ingress traffic.  Some tc / kernel builds omit the "ingress"
+	// keyword from the qdisc header even when the physical traffic direction is
+	// ingress (confirmed by segal_72's cake_mq output where ifb4eth1 showed
+	// no "ingress" token).  Fall back to interface-name detection so the
+	// frontend never mis-labels an IFB as [EGRESS].
+	if cs.Direction == "egress" && strings.HasPrefix(cs.Interface, "ifb") {
+		cs.Direction = "ingress"
+	}
 }
 
 func parseSentLine(cs *types.CakeStats, line string) {
