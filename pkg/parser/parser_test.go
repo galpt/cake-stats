@@ -396,6 +396,51 @@ func TestCakeMQ_VoiceTierDelayMax(t *testing.T) {
 	assertEqual(t, "voice.pk_delay", "700us", voice.PkDelay)
 }
 
+// TestParseHeaderAndAckDrop ensures that the top-level "dropped" counter
+// and a non-zero ack_drop field in the tier table are preserved.  This is a
+// regression case extracted from exreyfox's forum report where the dashboard
+// showed inconsistent numbers.
+func TestParseHeaderAndAckDrop(t *testing.T) {
+	snippet := `qdisc cake 8025: dev eth1.100 root refcnt 2 bandwidth 114Mbit diffserv4 dual-srchost nat nowash ack-filter split-gso rtt 100ms noatm overhead 44 mpu 84 memlimit 32Mb 
+ Sent 1099841154 bytes 4287733 pkt (dropped 38265, overlimits 1124382 requeues 0) 
+ backlog 0b 0p requeues 0
+ memory used: 8917248b of 32Mb
+ capacity estimate: 114Mbit
+ min/max network layer size:           28 /    1500
+ min/max overhead-adjusted size:       84 /    1544
+ average network hdr offset:           14
+
+                   Bulk  Best Effort        Video        Voice
+  thresh       7125Kbit       114Mbit       57Mbit    28500Kbit
+  target         5ms           5ms          5ms          5ms
+  interval      100ms        100ms        100ms        100ms
+  pk_delay        0us         41us         13us         12us
+  av_delay        0us          6us          2us          6us
+  sp_delay        0us          3us          1us          3us
+  backlog          0b           0b           0b           0b
+  pkts          93,132     2,242,560        44,980     136,071
+  bytes       18.9 MB     356.8 MB       2.5 MB      17.0 MB
+  way_inds      1,738     15,830         5,754           0
+  way_miss      1,330     13,387           284        4,465
+  way_cols         0          0             0            0
+  drops          41       7                0            0
+  marks           0        0                0            0
+  ack_drop        0     38175             1            0
+  sp_flows        1        1                1            1
+  bk_flows        0        0                0            0
+  un_flows        0        0                0            0
+  max_len         0        24,014           98          36.4 KB
+  quantum        300      1,514            762          300
+`
+	cs := parseText(snippet)[0]
+	assertUint(t, "header.dropped", 38265, cs.Dropped)
+	if len(cs.Tiers) < 2 {
+		t.Fatalf("expected at least two tiers, got %d", len(cs.Tiers))
+	}
+	be := cs.Tiers[1]
+	assertUint(t, "be.ack_drop", 38175, be.AckDrop)
+}
+
 // TestCakeMQ_StandaloneUnaffected verifies that ordinary (non-cake_mq) cake
 // qdiscs in the same tc output are still emitted as independent entries.
 func TestCakeMQ_StandaloneUnaffected(t *testing.T) {
