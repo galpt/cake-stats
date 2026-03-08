@@ -154,6 +154,18 @@ sh install.sh                # auto-detects arch, downloads latest binary
 sh install.sh --port 11112 --interval 1s
 ```
 
+*The installer automatically enables and starts the init.d service.*
+
+On reboot the procd script will wait for `/usr/bin/cake-stats` to become
+executable before launching; this prevents a race where the overlay filesystem
+is still mounting and the binary is temporarily unavailable.  If you install
+by hand make sure to run:
+```sh
+/etc/init.d/cake-stats enable   # create the rc.d symlink
+/etc/init.d/cake-stats start    # verify it launches immediately
+```
+Services that are not enabled will not start after a reboot.
+
 ### Install on systemd Linux
 ```bash
 sudo sh install.sh
