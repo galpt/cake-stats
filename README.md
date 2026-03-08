@@ -116,8 +116,8 @@ go test ./...          # prints ok for each package with tests
 go build -ldflags "-s -w -X main.Version=1.0.0" -o cake-stats ./cmd/cake-stats
 ```
 
-> **Note**: `pkg/types/types_easyjson.go` is checked in, so a normal `go build` works without extra tools.
-> To regenerate it after editing `pkg/types/types.go`, install `easyjson` and re-run codegen:
+> [!NOTE]
+> `pkg/types/types_easyjson.go` is checked in, so a normal `go build` works without extra tools. To regenerate it after editing `pkg/types/types.go`, install `easyjson` and re-run codegen:
 > ```bash
 > go install github.com/mailru/easyjson/easyjson@latest
 > go generate ./...
@@ -157,9 +157,7 @@ sh install.sh --port 11112 --interval 1s
 > [!NOTE]
 > *The installer automatically enables and starts the init.d service.*
 >
-> On reboot, the procd script will wait for `/usr/bin/cake-stats` to become executable before launching; this prevents a race where the overlay filesystem is still mounting and the binary is temporarily unavailable.
->
-> If you install by hand make sure to run:
+> On reboot, the procd script will wait for `/usr/bin/cake-stats` to become executable before launching; this prevents a race where the overlay filesystem is still mounting and the binary is temporarily unavailable. If you install by hand make sure to run:
 > ```sh
 > /etc/init.d/cake-stats enable   # create the rc.d symlink
 > /etc/init.d/cake-stats start    # verify it launches immediately
