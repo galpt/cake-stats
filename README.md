@@ -156,7 +156,7 @@ sh install.sh --port 11112 --interval 1s
 
 > [!NOTE]
 > *The installer automatically enables and starts the init.d service.*
-> The OpenWrt init script is installed with `START=99` so it comes up late in boot, registers with procd immediately, and waits through a brief overlay-mount race before `exec`-ing `/usr/bin/cake-stats`. The installer also fails immediately if `enable` or `start` does not succeed. If you install by hand make sure to run:
+> The OpenWrt init script is installed with `START=99` so it comes up late in boot, registers with procd immediately, and waits through a brief overlay-mount race before `exec`-ing `/usr/bin/cake-stats`. A matching `iface` hotplug fallback also starts it later if netifd finishes after the rc.d boot window. The installer fails immediately if `enable` or `start` does not succeed. If you install by hand make sure to run:
 > ```sh
 > /etc/init.d/cake-stats enable   # create the rc.d symlink
 > /etc/init.d/cake-stats start    # verify it launches immediately

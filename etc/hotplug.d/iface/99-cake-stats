@@ -1,12 +1,30 @@
 #!/bin/sh
 # cake-stats hotplug script
-# Restarts cake-stats when a CAKE-managed interface goes up or down
-# so the dashboard reflects the current interface state immediately.
+# Starts cake-stats after boot if netifd brings interfaces up after the rc.d
+# boot window, and restarts it when a CAKE-managed interface changes.
 
-[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || exit 0
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || [ "$ACTION" = "ifdown" ] || exit 0
 
-# Only react to interfaces that actually use CAKE
+SERVICE="/etc/init.d/cake-stats"
+
+service_enabled() {
+	"$SERVICE" enabled >/dev/null 2>&1
+}
+
+service_running() {
+	"$SERVICE" running >/dev/null 2>&1
+}
+
+if [ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ]; then
+	if service_enabled && ! service_running; then
+		logger -t "cake-stats" "Interface $INTERFACE $ACTION detected, starting fallback service launch"
+		"$SERVICE" start >/dev/null 2>&1 || true
+		exit 0
+	fi
+fi
+
+# Only restart on interfaces that actually use CAKE
 if tc qdisc show dev "$INTERFACE" 2>/dev/null | grep -q "qdisc cake"; then
 	logger -t "cake-stats" "Interface $INTERFACE $ACTION – restarting"
-	/etc/init.d/cake-stats restart 2>/dev/null || true
+	"$SERVICE" restart >/dev/null 2>&1 || true
 fi

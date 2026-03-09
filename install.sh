@@ -207,15 +207,34 @@ INITEOF
 
     chmod 755 /etc/init.d/${SERVICE_NAME}
 
-    # Install hotplug script to restart on interface changes
+    # Install hotplug script to start after boot and restart on CAKE changes
     mkdir -p /etc/hotplug.d/iface
     cat > /etc/hotplug.d/iface/99-${SERVICE_NAME} << HOTPLUGEOF
 #!/bin/sh
-# Restart ${SERVICE_NAME} when a CAKE interface goes up or down
-[ "\$ACTION" = "ifup" ] || [ "\$ACTION" = "ifdown" ] || exit 0
+# Start ${SERVICE_NAME} after boot if netifd finishes after rc.d boot, and
+# restart it when a CAKE interface changes.
+[ "\$ACTION" = "ifup" ] || [ "\$ACTION" = "ifupdate" ] || [ "\$ACTION" = "ifdown" ] || exit 0
+SERVICE="/etc/init.d/${SERVICE_NAME}"
+
+service_enabled() {
+    "\$SERVICE" enabled >/dev/null 2>&1
+}
+
+service_running() {
+    "\$SERVICE" running >/dev/null 2>&1
+}
+
+if [ "\$ACTION" = "ifup" ] || [ "\$ACTION" = "ifupdate" ]; then
+    if service_enabled && ! service_running; then
+        logger -t "${SERVICE_NAME}" "Interface \$INTERFACE \$ACTION detected, starting fallback service launch"
+        "\$SERVICE" start >/dev/null 2>&1 || true
+        exit 0
+    fi
+fi
+
 if tc qdisc show dev "\$INTERFACE" 2>/dev/null | grep -q "qdisc cake"; then
     logger -t "${SERVICE_NAME}" "Interface \$INTERFACE \$ACTION, restarting"
-    /etc/init.d/${SERVICE_NAME} restart
+    "\$SERVICE" restart >/dev/null 2>&1 || true
 fi
 HOTPLUGEOF
 
