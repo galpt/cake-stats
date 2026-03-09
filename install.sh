@@ -170,25 +170,20 @@ HOST="\${CAKE_STATS_HOST:-0.0.0.0}"
 PORT="\${CAKE_STATS_PORT:-${PORT}}"
 INTERVAL="\${CAKE_STATS_INTERVAL:-${INTERVAL}}"
 
-validate_binary() {
-	if [ ! -x "\$PROG" ]; then
-		echo "ERROR: \$PROG not found or not executable" >&2
-		logger -t ${SERVICE_NAME} "ERROR: binary \$PROG not found"
-		return 1
-	fi
-	return 0
-}
-
 start_service() {
-    validate_binary || return 1
-
-	logger -t ${SERVICE_NAME} "Starting on \$HOST:\$PORT (interval \$INTERVAL)"
+    logger -t ${SERVICE_NAME} "Registering procd instance on \$HOST:\$PORT (interval \$INTERVAL)"
 
 	procd_open_instance
-	procd_set_param command "\$PROG" \\
-		-host     "\$HOST" \\
-		-port     "\$PORT" \\
-		-interval "\$INTERVAL"
+    procd_set_param command /bin/sh -c '
+        if [ ! -x "\$1" ]; then
+            logger -t ${SERVICE_NAME} "binary \$1 not found at startup, waiting"
+            until [ -x "\$1" ]; do
+                sleep 1
+            done
+        fi
+        logger -t ${SERVICE_NAME} "Launching on \$2:\$3 (interval \$4)"
+        exec "\$1" -host "\$2" -port "\$3" -interval "\$4"
+    ' sh "\$PROG" "\$HOST" "\$PORT" "\$INTERVAL"
 	procd_set_param pidfile /var/run/${SERVICE_NAME}.pid
 	procd_set_param stdout 1
 	procd_set_param stderr 1
