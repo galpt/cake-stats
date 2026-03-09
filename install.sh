@@ -166,26 +166,52 @@ STOP=10
 USE_PROCD=1
 
 PROG="${BINARY_PATH}"
+HOST="\${CAKE_STATS_HOST:-0.0.0.0}"
+PORT="\${CAKE_STATS_PORT:-${PORT}}"
+INTERVAL="\${CAKE_STATS_INTERVAL:-${INTERVAL}}"
+
+validate_binary() {
+	if [ ! -x "\$PROG" ]; then
+		echo "ERROR: \$PROG not found or not executable" >&2
+		logger -t ${SERVICE_NAME} "ERROR: binary \$PROG not found"
+		return 1
+	fi
+	return 0
+}
 
 start_service() {
-    [ -x "\$PROG" ] || { echo "Binary \$PROG not found"; return 1; }
-    procd_open_instance
-    procd_set_param command "\$PROG" -port ${PORT} -interval ${INTERVAL}
-    procd_set_param pidfile /var/run/${SERVICE_NAME}.pid
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_set_param respawn
-    procd_close_instance
-    logger -t ${SERVICE_NAME} "Service started on port ${PORT}"
+	# If the binary isn't present yet (e.g. overlay filesystem mounting),
+	# retry until it becomes available rather than bailing out forever.
+	until validate_binary; do
+		logger -t ${SERVICE_NAME} "binary not found, waiting"
+		sleep 1
+	done
+
+	logger -t ${SERVICE_NAME} "Starting on \$HOST:\$PORT (interval \$INTERVAL)"
+
+	procd_open_instance
+	procd_set_param command "\$PROG" \\
+		-host     "\$HOST" \\
+		-port     "\$PORT" \\
+		-interval "\$INTERVAL"
+	procd_set_param pidfile /var/run/${SERVICE_NAME}.pid
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn 3600 5 5
+	procd_close_instance
 }
 
 stop_service() {
-    logger -t ${SERVICE_NAME} "Service stopped"
+	logger -t ${SERVICE_NAME} "Stopping"
 }
 
 reload_service() {
-    stop
-    start
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "${SERVICE_NAME}"
 }
 INITEOF
 
