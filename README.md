@@ -156,11 +156,14 @@ sh install.sh --port 11112 --interval 1s
 
 > [!NOTE]
 > *The installer automatically enables and starts the init.d service.*
->
 > The OpenWrt init script is installed with `START=99` so it comes up late in boot, and the installer now fails immediately if `enable` or `start` does not succeed. If you install by hand make sure to run:
 > ```sh
 > /etc/init.d/cake-stats enable   # create the rc.d symlink
 > /etc/init.d/cake-stats start    # verify it launches immediately
+> ```
+> To verify the router-side install after a reboot, copy `verify-openwrt-install.sh` to the router and run:
+> ```sh
+> sh verify-openwrt-install.sh
 > ```
 > Services that are not enabled will not start after a reboot.
 
