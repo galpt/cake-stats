@@ -2,7 +2,7 @@
 # cake-stats - real-time CAKE SQM statistics web dashboard
 # OpenWrt procd init script
 
-START=95
+START=99
 STOP=10
 USE_PROCD=1
 
@@ -21,14 +21,7 @@ validate_binary() {
 }
 
 start_service() {
-	# If the binary isn't present yet (e.g. overlay filesystem mounting),
-	# retry until it becomes available rather than bailing out forever.  This
-	# prevents the service from remaining disabled after a reboot when the
-	# startup order causes our script to run before the overlay is mounted.
-	until validate_binary; do
-		logger -t cake-stats "binary not found, waiting"
-		sleep 1
-	done
+	validate_binary || return 1
 
 	logger -t cake-stats "Starting on $HOST:$PORT (interval $INTERVAL)"
 

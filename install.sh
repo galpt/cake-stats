@@ -161,7 +161,7 @@ install_openwrt_service() {
 #!/bin/sh /etc/rc.common
 # ${SERVICE_NAME} - real-time CAKE SQM statistics web dashboard
 
-START=95
+START=99
 STOP=10
 USE_PROCD=1
 
@@ -180,12 +180,7 @@ validate_binary() {
 }
 
 start_service() {
-	# If the binary isn't present yet (e.g. overlay filesystem mounting),
-	# retry until it becomes available rather than bailing out forever.
-	until validate_binary; do
-		logger -t ${SERVICE_NAME} "binary not found, waiting"
-		sleep 1
-	done
+    validate_binary || return 1
 
 	logger -t ${SERVICE_NAME} "Starting on \$HOST:\$PORT (interval \$INTERVAL)"
 
@@ -231,8 +226,20 @@ HOTPLUGEOF
 
     chmod 755 /etc/hotplug.d/iface/99-${SERVICE_NAME}
 
-    /etc/init.d/${SERVICE_NAME} enable 2>/dev/null || true
-    /etc/init.d/${SERVICE_NAME} start  2>/dev/null || true
+    if ! /etc/init.d/${SERVICE_NAME} enable; then
+        log_error "Failed to enable OpenWrt service"
+        exit 1
+    fi
+
+    if ! /etc/init.d/${SERVICE_NAME} start; then
+        log_error "Failed to start OpenWrt service"
+        exit 1
+    fi
+
+    if ! /etc/init.d/${SERVICE_NAME} enabled >/dev/null 2>&1; then
+        log_error "OpenWrt service was started but is not enabled for reboot"
+        exit 1
+    fi
 
     log_ok "OpenWrt service enabled and started"
 }

@@ -157,7 +157,7 @@ sh install.sh --port 11112 --interval 1s
 > [!NOTE]
 > *The installer automatically enables and starts the init.d service.*
 >
-> On reboot, the procd script will wait for `/usr/bin/cake-stats` to become executable before launching; this prevents a race where the overlay filesystem is still mounting and the binary is temporarily unavailable. If you install by hand make sure to run:
+> The OpenWrt init script is installed with `START=99` so it comes up late in boot, and the installer now fails immediately if `enable` or `start` does not succeed. If you install by hand make sure to run:
 > ```sh
 > /etc/init.d/cake-stats enable   # create the rc.d symlink
 > /etc/init.d/cake-stats start    # verify it launches immediately
