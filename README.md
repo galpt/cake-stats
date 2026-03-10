@@ -154,7 +154,7 @@ sh install.sh                # auto-detects arch, downloads latest binary
 sh install.sh --port 11112 --interval 1s
 ```
 
-> [!NOTE]
+> [!TIP]
 > *The installer automatically enables and starts the init.d service.*
 > The OpenWrt init script is installed with `START=99` so it comes up late in boot, registers with procd immediately, and waits through a brief overlay-mount race before `exec`-ing `/usr/bin/cake-stats`. A matching `iface` hotplug fallback also starts it later if netifd finishes after the rc.d boot window. The installer fails immediately if `enable` or `start` does not succeed. If you install by hand make sure to run:
 > ```sh
@@ -166,6 +166,28 @@ sh install.sh --port 11112 --interval 1s
 > sh verify-openwrt-install.sh
 > ```
 > Services that are not enabled will not start after a reboot.
+
+> [!NOTE]
+> **OpenWrt notes from community feedback:**
+>
+> - If you plan to install on-router using `git clone`, many OpenWrt builds ship a minimal `git` without HTTPS support. Replace it with `git-http` and install the CA bundle to enable HTTPS access to GitHub:
+>
+> ```sh
+> opkg update
+> opkg remove git
+> opkg install git-http ca-bundle
+> ```
+>
+> `git-http` provides HTTPS-capable `git` and `ca-bundle` supplies root certificates required to verify GitHub (or other HTTPS) hosts.
+>
+> - Some OpenWrt images include a trimmed `wget` that does not support the `--show-progress` option. If `sh install.sh` fails with `wget: unrecognized option: show-progress`, either edit `install.sh` to remove the `--show-progress` flag, or install a full `wget`/`curl` package on the router before running the installer:
+>
+> ```sh
+> opkg install wget curl
+> # or edit install.sh and remove the --show-progress argument
+> ```
+>
+> Alternatively, download a prebuilt binary from the Releases page and copy it to `/usr/bin` on the router.
 
 ### Install on systemd Linux
 ```bash
