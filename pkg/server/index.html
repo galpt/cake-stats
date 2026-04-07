@@ -136,9 +136,21 @@
       } catch (_) { return iso || '--'; }
     }
 
+    /**
+     * Resolve an app-local path so the UI still works when a reverse proxy
+     * serves cake-stats from a subpath such as /cake-stats or /cake-stats/.
+     */
+    function appURL(path) {
+      const pathname = window.location.pathname || '/';
+      const trimmed = pathname.replace(/\/+$/, '');
+      const base = trimmed === '' ? '/' : trimmed + '/';
+      return new URL(path.replace(/^\//, ''), window.location.origin + base).toString();
+    }
+
     // ── History buffer (client-side ring) ─────────────────────────────────
     // Keyed by interface name; each entry holds five parallel arrays.
-    // On page load we seed from /api/history; thereafter SSE events extend it.
+    // On page load we seed from the app-local history endpoint; thereafter SSE
+    // events extend it.
 
     const HIST_CAP = 300; // samples per interface  (~5 min at 1 s interval)
     const histBuf  = {};  // { [iface]: { t, tx, av, pk, dr } }
@@ -159,7 +171,7 @@
 
     async function seedHistory() {
       try {
-        const r = await fetch('/api/history');
+        const r = await fetch(appURL('/api/history'));
         if (!r.ok) return;
         const data = await r.json();
         Object.entries(data).forEach(([name, samples]) => {
@@ -741,7 +753,7 @@
     function connect() {
       setStatus('connecting', 'text-[#6B8AB0]');
 
-      const es = new EventSource('/events');
+      const es = new EventSource(appURL('/events'));
 
       es.onopen = () => setStatus('connected', 'text-[#4DB38A]');
 
