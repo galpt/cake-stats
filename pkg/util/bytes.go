@@ -26,15 +26,4 @@ func BytesToString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
-// StringToBytes returns the backing memory of s as a byte slice without
-// allocation.  The caller MUST NOT write to the returned slice; doing so
-// violates Go's string immutability guarantee and causes undefined behaviour.
-//
-// Intended use: passing a string literal or an already-owned string to a
-// write-only sink (hash, length check, etc.) where a copy is not needed.
-func StringToBytes(s string) []byte {
-	if len(s) == 0 {
-		return nil
-	}
-	return unsafe.Slice(unsafe.StringData(s), len(s))
-}
+

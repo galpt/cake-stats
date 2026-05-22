@@ -6,7 +6,7 @@ import "time"
 
 // CakeTier holds per-tier statistics from the CAKE table section. All counters
 // use uint64 to handle arbitrarily large values without overflow.
-// (Fields are identical to the original parser package.)
+// (Fields are identical to those in the parser package.)
 type CakeTier struct {
 	Name     string `json:"name"`
 	Thresh   string `json:"thresh"`

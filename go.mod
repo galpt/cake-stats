@@ -1,6 +1,6 @@
 module github.com/galpt/cake-stats
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/gofiber/fiber/v3 v3.1.0

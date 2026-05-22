@@ -196,21 +196,6 @@ func TestParseHeader_FwmarkMask(t *testing.T) {
 	assertEqual(t, "fwmark_mask", "0xfc", cs.FwmarkMask)
 }
 
-func TestParseJSONMinimal(t *testing.T) {
-	jsonData := `[{"kind":"cake","dev":"eth0","handle":"800d:","options":{"bandwidth":5000000,"diffserv":"diffserv4","nat":true,"atm":"atm","overhead":48,"rtt":100000},"bytes":123,"packets":456,"drops":7,"overlimits":8,"requeues":9,"memory_used":100,"memory_limit":33554432,"capacity_estimate":5000000,"min_network_size":28,"max_network_size":1500,"avg_hdr_offset":14,"tins":[{"threshold_rate":3125,"sent_bytes":0,"drops":0,"max_pkt_len":0,"flow_quantum":300}]}]`
-	stats, err := parseJSON([]byte(jsonData))
-	if err != nil {
-		t.Fatalf("parseJSON error: %v", err)
-	}
-	if len(stats) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(stats))
-	}
-	cs := stats[0]
-	assertEqual(t, "interface", "eth0", cs.Interface)
-	assertUint(t, "drops", 7, cs.Dropped)
-	assertUint(t, "max_len", 0, cs.Tiers[0].MaxLen)
-}
-
 func TestParseUint64_Safe(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -595,8 +580,6 @@ func TestBesteffort_Count(t *testing.T) {
 	}
 }
 
-// TestBesteffort_Header verifies that header fields are parsed correctly for a
-// besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
 // TestBesteffort_Header verifies that header fields are parsed correctly for a
 // besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
 func TestBesteffort_Header(t *testing.T) {

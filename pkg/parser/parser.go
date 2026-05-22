@@ -1,41 +1,23 @@
 package parser
 
-// The current implementation of CollectStats shells out to `tc` and prefers
-// the JSON output (tc -j).  If even lower latency is required the
-// implementation can be swapped to use a netlink client such as
-// github.com/jsimonetti/rtnetlink to query qdisc statistics directly,
-// avoiding fork/exec entirely.
+// Package parser collects and parses CAKE qdisc statistics from the kernel.
+// CollectStats shells out to `tc -s qdisc` and always uses the human-readable
+// text output for maximum field coverage.  The JSON path (tc -j) is
+// intentionally avoided because the JSON tin representation omits many fields
+// that the text output provides (tier names, target, interval, delay values,
+// per-tier packet counters, etc.).
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
 	"github.com/galpt/cake-stats/pkg/types"
 	"github.com/galpt/cake-stats/pkg/util"
 )
-
-var (
-	jsonSupport    bool
-	jsonDetectOnce sync.Once
-)
-
-// supportsJSON detects whether the local `tc` binary can emit JSON.  The
-// result is cached so we only run the probe once.
-func supportsJSON() bool {
-	jsonDetectOnce.Do(func() {
-		cmd := exec.Command("tc", "-j", "-s", "qdisc")
-		if err := cmd.Run(); err == nil {
-			jsonSupport = true
-		}
-	})
-	return jsonSupport
-}
 
 // CollectStats polls the kernel via `tc` and returns a slice of CakeStats.
 // Always uses the human-readable text output from `tc -s qdisc` for maximum
@@ -50,125 +32,8 @@ func CollectStats(ctx context.Context) ([]types.CakeStats, error) {
 	return parseText(util.BytesToString(out)), nil
 }
 
-// parseJSON handles the JSON output from "tc -j -s qdisc".  We don't try to
-// mirror every field the kernel sends; the goal is to populate a minimal
-// CakeStats value with the same information our text parser would produce.
-func parseJSON(raw []byte) ([]types.CakeStats, error) {
-	var arr []map[string]interface{}
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		return nil, err
-	}
-	var out []types.CakeStats
-	for _, obj := range arr {
-		if kind, _ := obj["kind"].(string); kind != "cake" {
-			continue
-		}
-		cs := types.CakeStats{UpdatedAt: time.Now().UTC()}
-		if dev, ok := obj["dev"].(string); ok {
-			cs.Interface = dev
-		}
-		if h, ok := obj["handle"].(string); ok {
-			cs.Handle = h
-		}
-		if opts, ok := obj["options"].(map[string]interface{}); ok {
-			if bw, ok := opts["bandwidth"].(float64); ok {
-				if bw > 0 {
-					// JSON bandwidth is in bytes/sec; convert to Mbit/s for display.
-					cs.Bandwidth = fmt.Sprintf("%dMbit", int64(bw)*8/1_000_000)
-				} else {
-					cs.Bandwidth = "unlimited"
-				}
-			}
-			if ds, ok := opts["diffserv"].(string); ok {
-				cs.DiffservMode = ds
-			}
-			if nat, ok := opts["nat"].(bool); ok {
-				cs.NATEnabled = nat
-			}
-			if wash, ok := opts["wash"].(bool); ok {
-				cs.WashEnabled = wash
-			}
-			// The tc JSON output does not currently emit an "atm" key, but handle
-			// it defensively in case future iproute2 versions add it.
-			if atm, ok := opts["atm"].(string); ok && atm != "" {
-				cs.ATMMode = atm
-			}
-			if v, ok := getUint(opts, "mpu"); ok && v > 0 {
-				cs.MPU = fmt.Sprintf("%d", v)
-			}
-			if ov, ok := opts["overhead"].(float64); ok {
-				cs.Overhead = fmt.Sprintf("%v", int64(ov))
-			}
-			if rtt, ok := opts["rtt"].(float64); ok {
-				cs.RTT = fmt.Sprintf("%dms", int64(rtt/1000))
-			}
-		}
-		if v, ok := getUint(obj, "bytes"); ok {
-			cs.SentBytes = v
-		}
-		if v, ok := getUint(obj, "packets"); ok {
-			cs.SentPkts = v
-		}
-		if v, ok := getUint(obj, "drops"); ok {
-			cs.Dropped = v
-		}
-		if v, ok := getUint(obj, "overlimits"); ok {
-			cs.Overlimits = v
-		}
-		if v, ok := getUint(obj, "requeues"); ok {
-			cs.Requeues = v
-		}
-		if v, ok := getUint(obj, "memory_used"); ok {
-			cs.MemoryUsed = fmt.Sprintf("%db", v)
-		}
-		if v, ok := getUint(obj, "memory_limit"); ok {
-			cs.MemoryTotal = fmt.Sprintf("%dMb", v/1024/1024)
-		}
-		if v, ok := getUint(obj, "capacity_estimate"); ok && v > 0 {
-			// JSON capacity_estimate is in bytes/sec; convert to Mbit/s.
-			cs.CapacityEst = fmt.Sprintf("%dMbit", v*8/1_000_000)
-		}
-		if v, ok := getUint(obj, "min_network_size"); ok {
-			cs.MinNetSize = fmt.Sprintf("%d", v)
-		}
-		if v, ok := getUint(obj, "max_network_size"); ok {
-			cs.MaxNetSize = fmt.Sprintf("%d", v)
-		}
-		if v, ok := getUint(obj, "avg_hdr_offset"); ok {
-			cs.AvgHdrOffset = fmt.Sprintf("%d", v)
-		}
-		if tins, ok := obj["tins"].([]interface{}); ok {
-			var tiers []types.CakeTier
-			for _, ti := range tins {
-				if m, ok := ti.(map[string]interface{}); ok {
-					var t types.CakeTier
-					if thr, ok := getUint(m, "threshold_rate"); ok {
-						t.Thresh = fmt.Sprintf("%d", thr)
-					}
-					if sb, ok := getUint(m, "sent_bytes"); ok {
-						t.Bytes = sb
-					}
-					if dr, ok := getUint(m, "drops"); ok {
-						t.Drops = dr
-					}
-					if ml, ok := getUint(m, "max_pkt_len"); ok {
-						t.MaxLen = ml
-					}
-					if q, ok := getUint(m, "flow_quantum"); ok {
-						t.Quantum = q
-					}
-					tiers = append(tiers, t)
-				}
-			}
-			cs.Tiers = tiers
-		}
-		out = append(out, cs)
-	}
-	return out, nil
-}
-
 func parseText(raw string) []types.CakeStats {
-	lines := util.Split(raw, "\n")
+	lines := util.SplitLines(raw)
 	type block struct{ lines []string }
 	var blocks []block
 	cur := block{}
@@ -443,7 +308,7 @@ func parseBacklogLine(cs *types.CakeStats, line string) {
 func parseMemoryLine(cs *types.CakeStats, line string) {
 	after := util.AfterColon(line)
 	parts := util.Fields(after)
-	if len(parts) >= 3 {
+	if len(parts) >= 3 && parts[1] == "of" {
 		cs.MemoryUsed = parts[0]
 		cs.MemoryTotal = parts[2]
 	}
@@ -535,19 +400,6 @@ func assembleTiers(names []string, buf map[string][]string) []types.CakeTier {
 	}
 	return tiers
 }
-
-func getUint(m map[string]interface{}, key string) (uint64, bool) {
-	if v, ok := m[key]; ok {
-		switch t := v.(type) {
-		case float64:
-			return uint64(t), true
-		case string:
-			return util.ParseUint64(t), true
-		}
-	}
-	return 0, false
-}
-
 // headerParentHandle extracts the major handle from a "parent X:N" token pair
 // in a tc qdisc header line.  For example, "parent 1:2" returns "1".
 // Returns an empty string when no parent token is present (root qdisc).
@@ -711,6 +563,4 @@ func maxDelayStr(queues [][]types.CakeTier, tierIdx int, field func(types.CakeTi
 	return bestStr
 }
 
-// cakeParseDelayUsec was moved to pkg/util as util.ParseDelayUsec.
-// The canonical implementation lives in util.ParseDelayMs (returns ms) and
-// util.ParseDelayUsec (returns µs); use those directly in all new code.
+

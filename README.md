@@ -85,12 +85,12 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 ## Requirements
 
 - Linux kernel with `tc` + `sch_cake` module loaded, **or** OpenWrt with `kmod-sched-cake`
-- Go 1.25+ (build only; not needed at runtime)
+- Go 1.26+ (build only; not needed at runtime)
 - Third-party libraries used during build/services:
   - [Fiber v3](https://gofiber.io/) – HTTP framework
   - [zerolog](https://github.com/rs/zerolog) – structured logging
   - [easyjson](https://github.com/mailru/easyjson) – JSON code generation; `pkg/types/types_easyjson.go` is checked in and generated via `//go:generate easyjson -all` in `pkg/types/types.go`.  CI installs the `easyjson` binary and re-runs `go generate ./...` on every build to keep the generated file in sync.
-  - [rtnetlink](https://github.com/jsimonetti/rtnetlink) – optional netlink client (not currently used; included in go.mod for future event‑based polling)
+
 
 [&#8593; Back to Table of Contents](#table-of-contents)
 
@@ -99,7 +99,7 @@ Built for **embedded hardware** where every allocation matters: Fiber v3 keeps H
 - **Modular architecture**: code is split into `pkg/parser`, `pkg/history`, `pkg/server`, `pkg/log`, `pkg/types`, and `pkg/util`, with the CLI entrypoint under `cmd/cake-stats`.  `pkg/util` centralises all allocation-heavy string/byte helpers (split, trim, parse, zero-copy byte↔string conversions) so every other package imports one place instead of duplicating `strconv`/`strings` call sites.  This keeps the core logic reusable and simplifies testing.
 - **Zero-allocation philosophy**: hot paths avoid heap allocations by using `sync.Pool` for temporary buffers, easyjson-generated marshalers (`MarshalEasyJSON`/`UnmarshalEasyJSON` in `pkg/types/types_easyjson.go`) that skip reflection entirely, zero-copy `unsafe`-backed byte↔string conversions in `pkg/util`, and pre‑computed byte slices.  The 100 ms poll loop is designed to run with minimal GC pressure.
 - **Ring buffer history**: a thread-safe circular buffer stores past snapshots; clients receive both current data and historical samples after reconnects or page loads.
-- **Polling strategy**: defaults to 100 ms for near-instant updates; interval is command-line configurable.  The codebase contains scaffolding and a placeholder comment for an optional rtnetlink-based watcher, but the current release still relies on regular `tc` invocations.
+- **Polling strategy**: defaults to 100 ms for near-instant updates; interval is command-line configurable.
 - **Server-Sent Events**: statistics are broadcast over SSE.  A pool of reusable message buffers reduces allocations when many clients connect.
 - **Fiber & zerolog**: Fiber v3 provides a lightweight HTTP server with built‑in recovery middleware; zerolog supplies compact, structured log output.
 - **Single static binary**: the project builds to one statically-linked executable, suitable for OpenWrt.
@@ -214,7 +214,7 @@ sh uninstall.sh --force      # no prompts
 
 ## Limitations & Next Steps
 
-- Still polls using `tc`; a kernel‑level rtnetlink watcher is included as an option but not yet the default.
+- Polling‑based; future work may switch to kernel‑level event notification.
 - No built‑in authentication or HTTPS; expose only on trusted networks or pair with a reverse proxy.
 - UI is intentionally minimal.
 - RAM footprint may vary. Depending on kernel malloc behaviour, architecture and how many clients are connected the value can be anywhere from about 4 MB up to a dozen megabytes.

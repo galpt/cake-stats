@@ -658,7 +658,7 @@
       // Update header bar
       ifaceCountEl.textContent = ifaces.length === 1
         ? '1 interface'
-        : `${ifaces.length} interface${ifaces.length === 0 ? 's' : 's'}`;
+        : `${ifaces.length} interfaces`;
       lastUpdatedEl.textContent = fmtTime(payload.updated_at);
 
       if (ifaces.length === 0) {

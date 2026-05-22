@@ -23,6 +23,7 @@ import (
 var indexHTML string
 
 const sseBufSize = 4
+const sseRetryInterval = "2000"
 
 // Server encapsulates the Fiber app, polling state, SSE client registry and
 // history store.  It is safe for concurrent use.
@@ -120,7 +121,9 @@ var sseBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 1024); return 
 func buildSSEEvent(payload []byte) []byte {
 	buf := sseBufPool.Get().(*[]byte)
 	*buf = (*buf)[:0]
-	*buf = append(*buf, "retry: 2000\ndata: "...)
+	*buf = append(*buf, "retry: "...)
+	*buf = append(*buf, sseRetryInterval...)
+	*buf = append(*buf, "\ndata: "...)
 	*buf = append(*buf, payload...)
 	*buf = append(*buf, "\n\n"...)
 	out := make([]byte, len(*buf))
