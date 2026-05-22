@@ -81,7 +81,7 @@ qdisc cake 800e: dev ifb4eth1 root refcnt 2 bandwidth 50Mbit diffserv4 dual-dsth
 `
 
 func TestParseTCOutput_Count(t *testing.T) {
-	results := parseText(sampleTCOutput)
+	results := parseTextString(sampleTCOutput)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 CAKE interfaces, got %d", len(results))
 	}
@@ -102,7 +102,7 @@ func assertUint(t *testing.T, field string, want, got uint64) {
 }
 
 func TestParseTCOutput_EgressHeader(t *testing.T) {
-	cs := parseText(sampleTCOutput)[0]
+	cs := parseTextString(sampleTCOutput)[0]
 	assertEqual(t, "interface", "eth1", cs.Interface)
 	assertEqual(t, "direction", "egress", cs.Direction)
 	assertEqual(t, "bandwidth", "50Mbit", cs.Bandwidth)
@@ -117,7 +117,7 @@ func TestParseTCOutput_EgressHeader(t *testing.T) {
 }
 
 func TestParseTCOutput_EgressGlobalStats(t *testing.T) {
-	cs := parseText(sampleTCOutput)[0]
+	cs := parseTextString(sampleTCOutput)[0]
 	assertUint(t, "sent_bytes", 453393887, cs.SentBytes)
 	assertUint(t, "sent_pkts", 1599017, cs.SentPkts)
 	assertUint(t, "dropped", 2515, cs.Dropped)
@@ -131,7 +131,7 @@ func TestParseTCOutput_EgressGlobalStats(t *testing.T) {
 }
 
 func TestParseTCOutput_EgressTiers(t *testing.T) {
-	cs := parseText(sampleTCOutput)[0]
+	cs := parseTextString(sampleTCOutput)[0]
 	if len(cs.Tiers) != 4 {
 		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
 	}
@@ -150,7 +150,7 @@ func TestParseTCOutput_EgressTiers(t *testing.T) {
 }
 
 func TestParseTCOutput_FloatDelays(t *testing.T) {
-	cs := parseText(sampleTCOutput)[1]
+	cs := parseTextString(sampleTCOutput)[1]
 	video := cs.Tiers[2]
 	if video.PkDelay != "6.73ms" {
 		t.Errorf("expected pk_delay=6.73ms, got %q", video.PkDelay)
@@ -161,7 +161,7 @@ func TestParseTCOutput_FloatDelays(t *testing.T) {
 }
 
 func TestParseTCOutput_IngressStats(t *testing.T) {
-	cs := parseText(sampleTCOutput)[1]
+	cs := parseTextString(sampleTCOutput)[1]
 	assertEqual(t, "interface", "ifb4eth1", cs.Interface)
 	assertUint(t, "dropped", 28962, cs.Dropped)
 	assertUint(t, "marks", 117224, cs.Tiers[1].Marks)
@@ -172,7 +172,7 @@ func TestParseHeader_Precedence(t *testing.T) {
 	raw := `qdisc cake 800d: dev eth2 root refcnt 2 bandwidth 20Mbit precedence rtt 100ms noatm overhead 0 memlimit 32Mb 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
  backlog 0b 0p requeues 0`
-	stats := parseText(raw)
+	stats := parseTextString(raw)
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
 	}
@@ -187,7 +187,7 @@ func TestParseHeader_FwmarkMask(t *testing.T) {
 	raw := `qdisc cake 800d: dev eth3 root refcnt 2 bandwidth 20Mbit diffserv4 fwmark 0xfc rtt 100ms noatm overhead 0 memlimit 32Mb 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
  backlog 0b 0p requeues 0`
-	stats := parseText(raw)
+	stats := parseTextString(raw)
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 CAKE interface, got %d", len(stats))
 	}
@@ -298,7 +298,7 @@ qdisc cake 0: dev eth0 parent 1:2 refcnt 2 bandwidth 100Mbit diffserv4 dual-srch
 // TestCakeMQ_Count verifies that two cake sub-queues under one cake_mq parent
 // are collapsed into a single CakeStats entry.
 func TestCakeMQ_Count(t *testing.T) {
-	results := parseText(sampleCakeMQOutput)
+	results := parseTextString(sampleCakeMQOutput)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 aggregated CakeStats for cake_mq, got %d", len(results))
 	}
@@ -307,7 +307,7 @@ func TestCakeMQ_Count(t *testing.T) {
 // TestCakeMQ_Identity verifies that identity fields come from the cake_mq
 // parent (handle, interface) while CAKE config is inherited from sub-queues.
 func TestCakeMQ_Identity(t *testing.T) {
-	cs := parseText(sampleCakeMQOutput)[0]
+	cs := parseTextString(sampleCakeMQOutput)[0]
 	assertEqual(t, "interface", "eth0", cs.Interface)
 	assertEqual(t, "handle", "1", cs.Handle)
 	assertEqual(t, "direction", "egress", cs.Direction)
@@ -324,7 +324,7 @@ func TestCakeMQ_Identity(t *testing.T) {
 // TestCakeMQ_GlobalCounters verifies that global counters are summed across
 // all hardware queues.
 func TestCakeMQ_GlobalCounters(t *testing.T) {
-	cs := parseText(sampleCakeMQOutput)[0]
+	cs := parseTextString(sampleCakeMQOutput)[0]
 	assertUint(t, "sent_bytes", 450000000, cs.SentBytes)
 	assertUint(t, "sent_pkts", 1600000, cs.SentPkts)
 	assertUint(t, "dropped", 250, cs.Dropped)
@@ -340,7 +340,7 @@ func TestCakeMQ_GlobalCounters(t *testing.T) {
 
 // TestCakeMQ_TierCount verifies that four tiers are present after aggregation.
 func TestCakeMQ_TierCount(t *testing.T) {
-	cs := parseText(sampleCakeMQOutput)[0]
+	cs := parseTextString(sampleCakeMQOutput)[0]
 	if len(cs.Tiers) != 4 {
 		t.Fatalf("expected 4 tiers, got %d", len(cs.Tiers))
 	}
@@ -349,7 +349,7 @@ func TestCakeMQ_TierCount(t *testing.T) {
 // TestCakeMQ_TierCounters verifies that per-tier counters are summed and
 // delay strings reflect the worst-case (maximum) value across queues.
 func TestCakeMQ_TierCounters(t *testing.T) {
-	cs := parseText(sampleCakeMQOutput)[0]
+	cs := parseTextString(sampleCakeMQOutput)[0]
 	be := cs.Tiers[1] // "Best Effort"
 	assertEqual(t, "tier1.name", "Best Effort", be.Name)
 
@@ -375,7 +375,7 @@ func TestCakeMQ_TierCounters(t *testing.T) {
 
 // TestCakeMQ_VoiceTierDelayMax verifies pick-max across queues for Voice tier.
 func TestCakeMQ_VoiceTierDelayMax(t *testing.T) {
-	cs := parseText(sampleCakeMQOutput)[0]
+	cs := parseTextString(sampleCakeMQOutput)[0]
 	voice := cs.Tiers[3]
 	assertEqual(t, "voice.name", "Voice", voice.Name)
 	assertEqual(t, "voice.pk_delay", "700us", voice.PkDelay)
@@ -417,7 +417,7 @@ func TestParseHeaderAndAckDrop(t *testing.T) {
   max_len         0        24,014           98          36.4 KB
   quantum        300      1,514            762          300
 `
-	cs := parseText(snippet)[0]
+	cs := parseTextString(snippet)[0]
 	assertUint(t, "header.dropped", 38265, cs.Dropped)
 	if len(cs.Tiers) < 2 {
 		t.Fatalf("expected at least two tiers, got %d", len(cs.Tiers))
@@ -430,7 +430,7 @@ func TestParseHeaderAndAckDrop(t *testing.T) {
 // qdiscs in the same tc output are still emitted as independent entries.
 func TestCakeMQ_StandaloneUnaffected(t *testing.T) {
 	combined := sampleCakeMQOutput + sampleTCOutput
-	results := parseText(combined)
+	results := parseTextString(combined)
 	// cake_mq on eth0 → 1, plus eth1 egress + ifb4eth1 ingress → 2 = 3 total.
 	if len(results) != 3 {
 		t.Fatalf("expected 3 CakeStats entries (1 cake_mq + 2 standalone), got %d", len(results))
@@ -512,7 +512,7 @@ qdisc cake 0: dev ifb4eth1 parent 1:2 refcnt 2 bandwidth 750Mbit diffserv4 flows
 // carry the "ingress" keyword — only the cake_mq parent line carries it.
 // This is the regression test for the segal_72 bug report.
 func TestCakeMQ_IngressDirection(t *testing.T) {
-	results := parseText(sampleCakeMQIngressOutput)
+	results := parseTextString(sampleCakeMQIngressOutput)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 aggregated CakeStats, got %d", len(results))
 	}
@@ -574,7 +574,7 @@ qdisc cake 8005: dev eth1 root refcnt 17 bandwidth 22500Kbit besteffort triple-i
 // TestBesteffort_Count verifies that a single-interface egress-only CAKE setup
 // (no IFB, besteffort mode) is detected as exactly one entry.
 func TestBesteffort_Count(t *testing.T) {
-	results := parseText(sampleBesteffortOutput)
+	results := parseTextString(sampleBesteffortOutput)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 CAKE interface (egress only), got %d", len(results))
 	}
@@ -583,7 +583,7 @@ func TestBesteffort_Count(t *testing.T) {
 // TestBesteffort_Header verifies that header fields are parsed correctly for a
 // besteffort CAKE qdisc with the "raw overhead 0" variant of the header line.
 func TestBesteffort_Header(t *testing.T) {
-	cs := parseText(sampleBesteffortOutput)[0]
+	cs := parseTextString(sampleBesteffortOutput)[0]
 	assertEqual(t, "interface", "eth1", cs.Interface)
 	assertEqual(t, "direction", "egress", cs.Direction)
 	assertEqual(t, "bandwidth", "22500Kbit", cs.Bandwidth)
@@ -601,7 +601,7 @@ func TestBesteffort_Header(t *testing.T) {
 
 // TestBesteffort_GlobalStats verifies global counters for the besteffort case.
 func TestBesteffort_GlobalStats(t *testing.T) {
-	cs := parseText(sampleBesteffortOutput)[0]
+	cs := parseTextString(sampleBesteffortOutput)[0]
 	assertUint(t, "sent_bytes", 137306352, cs.SentBytes)
 	assertUint(t, "sent_pkts", 1053588, cs.SentPkts)
 	assertUint(t, "dropped", 1449, cs.Dropped)
@@ -617,7 +617,7 @@ func TestBesteffort_GlobalStats(t *testing.T) {
 // This is the core fix: before the patch, Tiers was always empty for
 // besteffort mode, causing latency to show as 0 ms permanently.
 func TestBesteffort_SingleTier(t *testing.T) {
-	cs := parseText(sampleBesteffortOutput)[0]
+	cs := parseTextString(sampleBesteffortOutput)[0]
 	if len(cs.Tiers) != 1 {
 		t.Fatalf("expected 1 tier (besteffort = single Tin 0), got %d", len(cs.Tiers))
 	}
@@ -656,7 +656,7 @@ func minimalCakeHeader(params string) string {
 // TestParseHeader_ATMMode verifies that the "atm" keyword sets ATMMode to "atm"
 // and that the overhead value is captured correctly alongside it.
 func TestParseHeader_ATMMode(t *testing.T) {
-	cs := parseText(minimalCakeHeader("atm overhead 40"))[0]
+	cs := parseTextString(minimalCakeHeader("atm overhead 40"))[0]
 	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
 	assertEqual(t, "overhead", "40", cs.Overhead)
 	assertEqual(t, "mpu", "", cs.MPU)
@@ -665,7 +665,7 @@ func TestParseHeader_ATMMode(t *testing.T) {
 // TestParseHeader_PTMMode verifies that the "ptm" keyword sets ATMMode to "ptm"
 // (distinct from "atm") so the dashboard can label it correctly.
 func TestParseHeader_PTMMode(t *testing.T) {
-	cs := parseText(minimalCakeHeader("ptm overhead 30"))[0]
+	cs := parseTextString(minimalCakeHeader("ptm overhead 30"))[0]
 	assertEqual(t, "atm_mode", "ptm", cs.ATMMode)
 	assertEqual(t, "overhead", "30", cs.Overhead)
 	assertEqual(t, "mpu", "", cs.MPU)
@@ -674,7 +674,7 @@ func TestParseHeader_PTMMode(t *testing.T) {
 // TestParseHeader_NoATM verifies that the "noatm" keyword stores "noatm" in
 // ATMMode so the dashboard can display it explicitly.
 func TestParseHeader_NoATM(t *testing.T) {
-	cs := parseText(minimalCakeHeader("noatm overhead 0"))[0]
+	cs := parseTextString(minimalCakeHeader("noatm overhead 0"))[0]
 	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 	assertEqual(t, "overhead", "0", cs.Overhead)
 }
@@ -682,14 +682,14 @@ func TestParseHeader_NoATM(t *testing.T) {
 // TestParseHeader_Raw verifies that "raw" (the tc alias for noatm) normalises
 // to "noatm" so both keywords produce the same dashboard badge.
 func TestParseHeader_Raw(t *testing.T) {
-	cs := parseText(minimalCakeHeader("raw overhead 0"))[0]
+	cs := parseTextString(minimalCakeHeader("raw overhead 0"))[0]
 	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
 }
 
 // TestParseHeader_MPU verifies that "mpu N" stores the numeric string in MPU
 // and that it can coexist with noatm and an explicit overhead.
 func TestParseHeader_MPU(t *testing.T) {
-	cs := parseText(minimalCakeHeader("mpu 84 noatm overhead 38"))[0]
+	cs := parseTextString(minimalCakeHeader("mpu 84 noatm overhead 38"))[0]
 	assertEqual(t, "mpu", "84", cs.MPU)
 	assertEqual(t, "overhead", "38", cs.Overhead)
 	assertEqual(t, "atm_mode", "noatm", cs.ATMMode)
@@ -697,7 +697,7 @@ func TestParseHeader_MPU(t *testing.T) {
 
 // TestParseHeader_MPU_WithATM verifies MPU + ATM framing coexist correctly.
 func TestParseHeader_MPU_WithATM(t *testing.T) {
-	cs := parseText(minimalCakeHeader("mpu 64 atm overhead 40"))[0]
+	cs := parseTextString(minimalCakeHeader("mpu 64 atm overhead 40"))[0]
 	assertEqual(t, "mpu", "64", cs.MPU)
 	assertEqual(t, "atm_mode", "atm", cs.ATMMode)
 }
@@ -726,7 +726,7 @@ func TestParseHeader_FlowModes(t *testing.T) {
 				" backlog 0b 0p requeues 0\n" +
 				" memory used: 14Kb of 4Mb\n" +
 				" capacity estimate: 100Mbit\n"
-			res := parseText(snippet)
+			res := parseTextString(snippet)
 			if len(res) == 0 {
 				t.Fatal("expected 1 result, got 0")
 			}
@@ -743,7 +743,7 @@ func TestParseHeader_AutorateIngress(t *testing.T) {
 		" backlog 0b 0p requeues 0\n" +
 		" memory used: 14Kb of 4Mb\n" +
 		" capacity estimate: 22000Kbit\n"
-	cs := parseText(snippet)[0]
+	cs := parseTextString(snippet)[0]
 	assertEqual(t, "bandwidth", "autorate-ingress", cs.Bandwidth)
 	assertEqual(t, "dual_mode", "dual-dsthost", cs.DualMode)
 	assertEqual(t, "overhead", "22", cs.Overhead)
@@ -770,7 +770,7 @@ func TestParseHeader_NATWash(t *testing.T) {
 				" backlog 0b 0p requeues 0\n" +
 				" memory used: 14Kb of 4Mb\n" +
 				" capacity estimate: 100Mbit\n"
-			res := parseText(snippet)
+			res := parseTextString(snippet)
 			if len(res) == 0 {
 				t.Fatal("expected 1 result, got 0")
 			}
@@ -794,7 +794,7 @@ func TestCapacityEstimate_ZeroSuppressed(t *testing.T) {
 		" backlog 0b 0p requeues 0\n" +
 		" memory used: 50000b of 7500000b\n" +
 		" capacity estimate: 0bit\n"
-	cs := parseText(snippet)[0]
+	cs := parseTextString(snippet)[0]
 	if cs.CapacityEst != "" {
 		t.Errorf("capacity_estimate should be suppressed for '0bit', got %q", cs.CapacityEst)
 	}
@@ -808,7 +808,7 @@ func TestCapacityEstimate_NonZeroKept(t *testing.T) {
 		" backlog 0b 0p requeues 0\n" +
 		" memory used: 50000b of 32Mb\n" +
 		" capacity estimate: 50Mbit\n"
-	cs := parseText(snippet)[0]
+	cs := parseTextString(snippet)[0]
 	assertEqual(t, "capacity_estimate", "50Mbit", cs.CapacityEst)
 }
 
@@ -843,7 +843,7 @@ func TestBacklogNotOverwrittenByTierTable(t *testing.T) {
 		"  un_flows            0            0            0            0\n" +
 		"  max_len             0         1514            0            0\n" +
 		"  quantum           300         1514          762          381\n"
-	cs := parseText(snippet)[0]
+	cs := parseTextString(snippet)[0]
 	assertEqual(t, "backlog_bytes", "150b", cs.BacklogBytes)
 	assertUint(t, "backlog_pkts", 12, cs.BacklogPkts)
 	// Tier table's backlog row should NOT have overwritten BacklogPkts.
@@ -864,7 +864,7 @@ qdisc fq_codel 0: dev eth0 parent :1 limit 10240p flows 1024 quantum 1514 target
  Sent 1000000 bytes 5000 pkt (dropped 0, overlimits 0 requeues 0) 
  backlog 0b 0p requeues 0
 `
-	results := parseText(noCakeOutput)
+	results := parseTextString(noCakeOutput)
 	if len(results) != 0 {
 		t.Fatalf("expected 0 CAKE interfaces (none configured), got %d", len(results))
 	}
@@ -953,8 +953,9 @@ func TestHeaderParentHandle(t *testing.T) {
 		{"qdisc cake 800d: dev eth1 root refcnt 2 bandwidth 50Mbit", ""},
 		{"qdisc cake_mq 1: dev eth0 root refcnt 6", ""},
 	}
+	var tok util.FieldTokenizer
 	for _, c := range cases {
-		if got := headerParentHandle(c.line); got != c.want {
+		if got := headerParentHandle(c.line, &tok); got != c.want {
 			t.Errorf("headerParentHandle(%q) = %q, want %q", c.line, got, c.want)
 		}
 	}
@@ -977,7 +978,7 @@ func TestStandaloneCake_IFB_NoIngressKeyword(t *testing.T) {
 		" backlog 0b 0p requeues 0\n" +
 		" memory used: 1425600b of 32Mb\n" +
 		" capacity estimate: 100Mbit\n"
-	cs := parseText(snippet)
+	cs := parseTextString(snippet)
 	if len(cs) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(cs))
 	}
@@ -1128,7 +1129,7 @@ qdisc cake 0: dev ifb4eth1 parent 803a:1 refcnt 2 bandwidth 650Mbit diffserv4 fl
 // The interface must still be labelled [INGRESS] and all 4 sub-queues must be
 // aggregated into one CakeStats entry with correct counters.
 func TestSegal72_CakeMQIFBDirection(t *testing.T) {
-	results := parseText(sampleSegal72Output)
+	results := parseTextString(sampleSegal72Output)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 aggregated CakeStats, got %d", len(results))
 	}

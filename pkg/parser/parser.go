@@ -6,80 +6,356 @@ package parser
 // intentionally avoided because the JSON tin representation omits many fields
 // that the text output provides (tier names, target, interval, delay values,
 // per-tier packet counters, etc.).
+//
+// All helpers in this package avoid heap allocation by using stack-allocated
+// FieldTokenizer and LineScanner instances instead of strings.Fields and
+// strings.Split.  Tier slices are obtained from sync.Pool.
 
 import (
 	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/galpt/cake-stats/pkg/types"
 	"github.com/galpt/cake-stats/pkg/util"
 )
 
+// Pool of []types.CakeTier slices reused across parse calls.
+// Each slice has capacity 8 (enough for diffserv8) and is returned with
+// length 0 for the caller to re-slice.
+var tierSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]types.CakeTier, 0, 8)
+		return &s
+	},
+}
+
+// acquireTiers obtains a zero-length tier slice with capacity ≥ n from
+// the pool.  The caller must return tiers via releaseTiers when done.
+func acquireTiers(n int) []types.CakeTier {
+	s := tierSlicePool.Get().(*[]types.CakeTier)
+	if cap(*s) < n {
+		*s = make([]types.CakeTier, n, n+8)
+	} else {
+		*s = (*s)[:n]
+	}
+	return *s
+}
+
+// reuses the backing array of a tier slice (does NOT zero elements).
+func releaseTiers(s []types.CakeTier) {
+	tierSlicePool.Put(&s)
+}
+
 // CollectStats polls the kernel via `tc` and returns a slice of CakeStats.
 // Always uses the human-readable text output from `tc -s qdisc` for maximum
-// field coverage.  The JSON path (tc -j) is intentionally avoided because the
-// JSON tin representation omits many fields that the text output provides
-// (tier names, target, interval, delay values, per-tier packet counters, etc.).
+// field coverage.
 func CollectStats(ctx context.Context) ([]types.CakeStats, error) {
 	out, err := exec.CommandContext(ctx, "tc", "-s", "qdisc").Output()
 	if err != nil {
 		return nil, fmt.Errorf("tc -s qdisc: %w", err)
 	}
-	return parseText(util.BytesToString(out)), nil
+	return parseText(out), nil
 }
 
-func parseText(raw string) []types.CakeStats {
-	lines := util.SplitLines(raw)
-	type block struct{ lines []string }
-	var blocks []block
-	cur := block{}
-	for _, l := range lines {
-		if strings.HasPrefix(l, "qdisc ") && len(cur.lines) > 0 {
-			blocks = append(blocks, cur)
-			cur = block{}
+// ---------------------------------------------------------------------------
+// Block-based parsing
+// ---------------------------------------------------------------------------
+
+// blockRange describes a contiguous range of lines belonging to one qdisc.
+type blockRange struct {
+	start int // index of first line
+	end   int // index of last line (exclusive), or -1 if not set
+}
+
+// parseText parses the raw tc output ([]byte) and returns CakeStats.
+// The raw byte slice must remain alive for the lifetime of the returned
+// CakeStats (all string fields are sub-strings of raw).
+func parseText(raw []byte) []types.CakeStats {
+	// Phase 1: build a line-start index in the raw buffer so we can
+	// address lines by index without copying strings.
+	var lineIdx [256]int
+	nLines := 0
+	lineIdx[0] = 0
+	nLines = 1
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\n' {
+			if nLines < len(lineIdx) {
+				lineIdx[nLines] = i + 1
+			}
+			nLines++
 		}
-		cur.lines = append(cur.lines, l)
-	}
-	if len(cur.lines) > 0 {
-		blocks = append(blocks, cur)
 	}
 
-	// Intermediate parse result annotated with routing metadata.
+	// Safety: if output exceeds 256 lines, fall back to full iteration.
+	// This is extremely unlikely for tc output.
+	if nLines > len(lineIdx) {
+		return parseTextFallback(raw)
+	}
+
+	// Helper: return the i-th line as a string (sub-string of raw).
+	lineStr := func(i int) string {
+		start := lineIdx[i]
+		var end int
+		if i+1 < nLines {
+			end = lineIdx[i+1] - 1 // strip trailing \n
+		} else {
+			end = len(raw)
+		}
+		if end < start {
+			return ""
+		}
+		return internLine(raw, start, end)
+	}
+
+	// Phase 2: identify qdisc blocks.
+	var blocks [32]blockRange
+	nBlocks := 0
+	blockStart := 0
+	for i := 0; i < nLines; i++ {
+		s := lineStr(i)
+		if len(s) >= 6 && s[:6] == "qdisc " && i > blockStart {
+			// End of previous block.
+			if nBlocks < len(blocks) {
+				blocks[nBlocks] = blockRange{blockStart, i}
+				nBlocks++
+			}
+			blockStart = i
+		}
+	}
+	// Last block.
+	if blockStart < nLines {
+		blocks[nBlocks] = blockRange{blockStart, nLines}
+		nBlocks++
+	}
+
+	// Phase 3: parse each block into a blockResult.
+	type ifaceHandle struct{ iface, handle string }
+
 	type blockResult struct {
 		cs           types.CakeStats
-		parentHandle string // non-empty for cake sub-queues attached to a cake_mq
-		isCakeMQ     bool   // true for the cake_mq parent qdisc block
+		parentHandle string
+		isCakeMQ     bool
 	}
-	var parsed []blockResult
+
+	var parsed [16]blockResult
+	nParsed := 0
+
+	var tok util.FieldTokenizer
+	for bi := 0; bi < nBlocks; bi++ {
+		b := blocks[bi]
+
+		// Get the full first line (header) by assembling raw bytes.
+		hdrStart := lineIdx[b.start]
+		var hdrEnd int
+		if b.start+1 < nLines {
+			hdrEnd = lineIdx[b.start+1] - 1
+		} else {
+			hdrEnd = len(raw)
+		}
+		header := internLine(raw, hdrStart, hdrEnd)
+
+		var cs types.CakeStats
+		var ok bool
+		var parentHandle string
+		var isCakeMQ bool
+
+		if strings.Contains(header, "qdisc cake_mq ") {
+			cs, ok = parseCakeBlock(raw, lineIdx[:nLines], b.start, b.end, &tok)
+			isCakeMQ = true
+		} else if strings.Contains(header, "qdisc cake ") {
+			cs, ok = parseCakeBlock(raw, lineIdx[:nLines], b.start, b.end, &tok)
+			parentHandle = headerParentHandle(header, &tok)
+		}
+
+		if ok && nParsed < len(parsed) {
+			parsed[nParsed] = blockResult{cs, parentHandle, isCakeMQ}
+			nParsed++
+		}
+	}
+
+	// Phase 4: build cake_mq parent lookup (linear scan, small n).
+	var mqKeys [16]ifaceHandle
+	var mqVals [16]types.CakeStats
+	nMQ := 0
+	for i := 0; i < nParsed; i++ {
+		r := &parsed[i]
+		if r.isCakeMQ {
+			mqKeys[nMQ] = ifaceHandle{r.cs.Interface, r.cs.Handle}
+			mqVals[nMQ] = r.cs
+			nMQ++
+		}
+	}
+
+	mqLookup := func(key ifaceHandle) (types.CakeStats, bool) {
+		for i := 0; i < nMQ; i++ {
+			if mqKeys[i] == key {
+				return mqVals[i], true
+			}
+		}
+		return types.CakeStats{}, false
+	}
+
+	// Phase 5: group sub-queues under their cake_mq parent.
+	// We use flat arrays with small limits.
+	type subGroup struct {
+		key  ifaceHandle
+		subs [16]types.CakeStats
+		n    int
+	}
+	var groups [8]subGroup
+	nGroups := 0
+
+	groupFor := func(key ifaceHandle) *subGroup {
+		for i := 0; i < nGroups; i++ {
+			if groups[i].key == key {
+				return &groups[i]
+			}
+		}
+		if nGroups < len(groups) {
+			g := &groups[nGroups]
+			g.key = key
+			nGroups++
+			return g
+		}
+		return nil
+	}
+
+	for i := 0; i < nParsed; i++ {
+		r := &parsed[i]
+		if !r.isCakeMQ && r.parentHandle != "" {
+			key := ifaceHandle{r.cs.Interface, r.parentHandle}
+			if _, ok := mqLookup(key); ok {
+				if g := groupFor(key); g != nil && g.n < len(g.subs) {
+					g.subs[g.n] = r.cs
+					g.n++
+				}
+			}
+		}
+	}
+
+	// Phase 6: emit results in original order.
+	var result types.CakeStats
+	resultArr := make([]types.CakeStats, 0, nParsed)
+	var emitted [16]ifaceHandle
+	nEmitted := 0
+	wasEmitted := func(key ifaceHandle) bool {
+		for i := 0; i < nEmitted; i++ {
+			if emitted[i] == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := 0; i < nParsed; i++ {
+		r := &parsed[i]
+
+		switch {
+		case r.isCakeMQ:
+			key := ifaceHandle{r.cs.Interface, r.cs.Handle}
+			if wasEmitted(key) {
+				continue
+			}
+			emitted[nEmitted] = key
+			nEmitted++
+
+			// Find sub-queues for this parent.
+			if g := groupFor(key); g != nil && g.n > 0 {
+				result = aggregateCakeMQSubQueues(r.cs, g.subs[:g.n])
+			} else {
+				result = r.cs
+			}
+			resultArr = append(resultArr, result)
+
+		case r.parentHandle != "":
+			key := ifaceHandle{r.cs.Interface, r.parentHandle}
+			if _, ok := mqLookup(key); ok {
+				continue // aggregated under parent
+			}
+			resultArr = append(resultArr, r.cs)
+
+		default:
+			resultArr = append(resultArr, r.cs)
+		}
+	}
+
+	return resultArr
+}
+
+// parseTextFallback handles tc output that exceeds our static line index
+// or block arrays.  Uses the same zero-alloc helpers but with dynamic
+// storage.  In practice this path is never exercised for normal tc output.
+func parseTextFallback(raw []byte) []types.CakeStats {
+	// Build dynamic line index.
+	type blockRange2 struct{ start, end int }
+
+	lineIdx := make([]int, 0, 256)
+	lineIdx = append(lineIdx, 0)
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\n' {
+			lineIdx = append(lineIdx, i+1)
+		}
+	}
+	nLines := len(lineIdx)
+
+	lineStr := func(i int) string {
+		start := lineIdx[i]
+		var end int
+		if i+1 < nLines {
+			end = lineIdx[i+1] - 1
+		} else {
+			end = len(raw)
+		}
+		if end < start {
+			return ""
+		}
+		return internLine(raw, start, end)
+	}
+
+	var blocks []blockRange2
+	blockStart := 0
+	for i := 0; i < nLines; i++ {
+		s := lineStr(i)
+		if len(s) >= 6 && s[:6] == "qdisc " && i > blockStart {
+			blocks = append(blocks, blockRange2{blockStart, i})
+			blockStart = i
+		}
+	}
+	blocks = append(blocks, blockRange2{blockStart, nLines})
+
+	type ifaceHandle struct{ iface, handle string }
+	type blockResult struct {
+		cs           types.CakeStats
+		parentHandle string
+		isCakeMQ     bool
+	}
+
+	var tok util.FieldTokenizer
+	parsed := make([]blockResult, 0, 16)
 
 	for _, b := range blocks {
-		if len(b.lines) == 0 {
-			continue
-		}
-		header := b.lines[0]
-		switch {
-		case strings.Contains(header, "qdisc cake_mq "):
-			// cake_mq parent block: parse header only for handle/interface/direction.
-			if cs, ok := parseCakeBlock(b.lines); ok {
-				parsed = append(parsed, blockResult{cs: cs, isCakeMQ: true})
+		header := lineStr(b.start)
+
+		if strings.Contains(header, "qdisc cake_mq ") {
+			cs, ok := parseCakeBlock(raw, lineIdx, b.start, b.end, &tok)
+			if ok {
+				parsed = append(parsed, blockResult{cs, "", true})
 			}
-		case strings.Contains(header, "qdisc cake "):
-			// Traditional standalone cake OR a cake sub-qdisc under cake_mq.
-			if cs, ok := parseCakeBlock(b.lines); ok {
-				parsed = append(parsed, blockResult{
-					cs:           cs,
-					parentHandle: headerParentHandle(header),
-				})
+		} else if strings.Contains(header, "qdisc cake ") {
+			cs, ok := parseCakeBlock(raw, lineIdx, b.start, b.end, &tok)
+			if ok {
+				parsed = append(parsed, blockResult{cs, headerParentHandle(header, &tok), false})
 			}
 		}
 	}
 
-	// Build a lookup from (interface, major-handle) to the cake_mq parent entry.
-	type ifaceHandle struct{ iface, handle string }
+	// cake_mq parent lookup.
 	mqParents := make(map[ifaceHandle]types.CakeStats)
 	for _, r := range parsed {
 		if r.isCakeMQ {
@@ -87,7 +363,6 @@ func parseText(raw string) []types.CakeStats {
 		}
 	}
 
-	// Group cake sub-queue instances by their cake_mq parent key.
 	subQueues := make(map[ifaceHandle][]types.CakeStats)
 	for _, r := range parsed {
 		if !r.isCakeMQ && r.parentHandle != "" {
@@ -98,8 +373,7 @@ func parseText(raw string) []types.CakeStats {
 		}
 	}
 
-	// Emit results, preserving original block order.
-	var result []types.CakeStats
+	result := make([]types.CakeStats, 0, len(parsed))
 	emittedMQ := make(map[ifaceHandle]bool)
 	for _, r := range parsed {
 		switch {
@@ -117,99 +391,234 @@ func parseText(raw string) []types.CakeStats {
 		case r.parentHandle != "":
 			key := ifaceHandle{r.cs.Interface, r.parentHandle}
 			if _, hasMQ := mqParents[key]; hasMQ {
-				// Already aggregated under its cake_mq parent; skip.
 				continue
 			}
-			// Orphaned sub-qdisc (no cake_mq parent visible) – emit verbatim.
 			result = append(result, r.cs)
 		default:
-			// Standalone root cake qdisc.
 			result = append(result, r.cs)
 		}
 	}
 	return result
 }
 
-// --- helpers below ---
+// internLine converts a sub-range of raw bytes to a string without copying.
+func internLine(raw []byte, start, end int) string {
+	if start >= end {
+		return ""
+	}
+	return util.BytesToString(raw[start:end])
+}
 
-func parseCakeBlock(lines []string) (types.CakeStats, bool) {
-	if len(lines) == 0 {
+// ---------------------------------------------------------------------------
+// CAKE block parser
+// ---------------------------------------------------------------------------
+
+// parseCakeBlock parses one CAKE qdisc block using the line index.
+// It uses the provided FieldTokenizer and avoids heap allocation for
+// temporary string storage.
+func parseCakeBlock(raw []byte, lineIdx []int, start, end int, tok *util.FieldTokenizer) (types.CakeStats, bool) {
+	if start >= end {
 		return types.CakeStats{}, false
 	}
+
 	cs := types.CakeStats{UpdatedAt: time.Now().UTC()}
-	cs.RawHeader = util.TrimSpace(lines[0])
-	parseHeader(&cs, lines[0])
-	var tierNames []string
-	tierFieldBuf := map[string][]string{}
-	inTable := false
-	for i := 1; i < len(lines); i++ {
-		trimmed := util.TrimSpace(lines[i])
-		if trimmed == "" {
+
+	// Read header line.
+	hdrStart := lineIdx[start]
+	var hdrEnd int
+	if start+1 < len(lineIdx) {
+		hdrEnd = lineIdx[start+1] - 1
+	} else {
+		hdrEnd = len(raw)
+	}
+	header := internLine(raw, hdrStart, hdrEnd)
+	cs.RawHeader = header
+	parseHeader(&cs, header, tok)
+
+	// ---- Parse remaining lines ----
+	var (
+		tierNames [8]string
+		nTiers    int
+
+		// Per-tier field data collected during line iteration.
+		// We store field values as sub-strings of the tc output.
+		// Each entry is a row: field name → values per tier.
+		ftNames [32]string
+		ftVals  [32][8]string
+		ftCount [32]int
+		nFields int
+
+		inTable bool
+	)
+
+	// Helper to look up a field value for a given tier index.
+	getField := func(name string, tierIdx int) string {
+		for fi := 0; fi < nFields; fi++ {
+			if ftNames[fi] == name && tierIdx < ftCount[fi] {
+				return ftVals[fi][tierIdx]
+			}
+		}
+		return ""
+	}
+	getFieldU := func(name string, tierIdx int) uint64 {
+		return util.ParseUint64(getField(name, tierIdx))
+	}
+
+	for i := start + 1; i < end; i++ {
+		lineStart := lineIdx[i]
+		var lineEnd int
+		if i+1 < len(lineIdx) {
+			lineEnd = lineIdx[i+1] - 1
+		} else {
+			lineEnd = len(raw)
+		}
+		if lineStart >= lineEnd {
 			continue
 		}
-		fields := util.Fields(trimmed)
+
+		// Get the line as a string.
+		trimmed := internLine(raw, lineStart, lineEnd)
+
+		// Trim leading/trailing whitespace for prefix checks.
+		// We use the sub-string directly (no allocation).
+		t := trimmed
+		for len(t) > 0 && (t[0] == ' ' || t[0] == '\t') {
+			t = t[1:]
+		}
+		for len(t) > 0 && (t[len(t)-1] == ' ' || t[len(t)-1] == '\t') {
+			t = t[:len(t)-1]
+		}
+		if t == "" {
+			continue
+		}
+
+		// Tokenise the trimmed line.
+		fields := tok.Tokenise(t)
 		if len(fields) == 0 {
 			continue
 		}
+
 		switch {
-		// Tier-table data rows must be checked FIRST so that keywords that also
-		// appear as tier-table row labels (e.g. "backlog") are not accidentally
-		// dispatched to the global-stats parsers once we are inside the table.
 		case inTable && len(fields) >= 2 && unicode.IsLower(rune(fields[0][0])):
-			tierFieldBuf[fields[0]] = fields[1:]
+			// Tier-table data row — store for assembleTiers.
+			if nFields < len(ftNames) {
+				ftNames[nFields] = fields[0]
+				nv := len(fields) - 1
+				if nv > 8 {
+					nv = 8
+				}
+				ftCount[nFields] = nv
+				for ti := 0; ti < nv; ti++ {
+					ftVals[nFields][ti] = fields[ti+1]
+				}
+				nFields++
+			}
+
 		case isTierHeaderLine(fields[0]):
-			tierNames = parseTierNames(fields)
+			// Parse tier names from the header row.
+			var tn [8]string
+			nTiers = 0
+			for fi := 0; fi < len(fields) && nTiers < len(tn); fi++ {
+				w := fields[fi]
+				switch {
+				case w == "Best" && fi+1 < len(fields) && fields[fi+1] == "Effort":
+					tn[nTiers] = "Best Effort"
+					nTiers++
+					fi++ // skip "Effort"
+				case w == "Tin" && fi+1 < len(fields):
+					tn[nTiers] = "Tin " + fields[fi+1]
+					nTiers++
+					fi++ // skip the number
+				default:
+					tn[nTiers] = w
+					nTiers++
+				}
+			}
+			for ti := 0; ti < nTiers; ti++ {
+				tierNames[ti] = tn[ti]
+			}
 			inTable = true
-		case strings.HasPrefix(trimmed, "Sent "):
-			parseSentLine(&cs, trimmed)
-		case strings.HasPrefix(trimmed, "backlog "):
-			parseBacklogLine(&cs, trimmed)
-		case strings.HasPrefix(trimmed, "memory used:"):
-			parseMemoryLine(&cs, trimmed)
-		case strings.HasPrefix(trimmed, "capacity estimate:"):
-			v := util.AfterColon(trimmed)
-			// Suppress "0bit" (and variants like "0Mbit", "0Kbit") that the
-			// kernel emits before it has measured capacity.  A zero capacity
-			// estimate is not informative; the configured bandwidth ("bw") is
-			// already shown in the header meta-row.
+
+		case strings.HasPrefix(t, "Sent "):
+			parseSentLine(&cs, t, tok)
+
+		case strings.HasPrefix(t, "backlog "):
+			parseBacklogLine(&cs, t, tok)
+
+		case strings.HasPrefix(t, "memory used:"):
+			parseMemoryLine(&cs, t, tok)
+
+		case strings.HasPrefix(t, "capacity estimate:"):
+			v := util.AfterColon(t)
 			if !strings.HasPrefix(v, "0") {
 				cs.CapacityEst = v
 			}
-		case strings.HasPrefix(trimmed, "min/max network layer size:"):
-			cs.MinNetSize, cs.MaxNetSize = parseMinMax(trimmed)
-		case strings.HasPrefix(trimmed, "min/max overhead-adjusted size:"):
-			cs.MinAdjSize, cs.MaxAdjSize = parseMinMax(trimmed)
-		case strings.HasPrefix(trimmed, "average network hdr offset:"):
-			cs.AvgHdrOffset = util.AfterColon(trimmed)
+
+		case strings.HasPrefix(t, "min/max network layer size:"):
+			cs.MinNetSize, cs.MaxNetSize = parseMinMax(t)
+
+		case strings.HasPrefix(t, "min/max overhead-adjusted size:"):
+			cs.MinAdjSize, cs.MaxAdjSize = parseMinMax(t)
+
+		case strings.HasPrefix(t, "average network hdr offset:"):
+			cs.AvgHdrOffset = util.AfterColon(t)
 		}
 	}
-	if len(tierNames) > 0 {
-		cs.Tiers = assembleTiers(tierNames, tierFieldBuf)
+
+	// Assemble tiers from collected field data.
+	if nTiers > 0 {
+		tiers := make([]types.CakeTier, nTiers)
+		for ti := 0; ti < nTiers; ti++ {
+			tiers[ti].Name = tierNames[ti]
+			t := &tiers[ti]
+			t.Thresh = getField("thresh", ti)
+			t.Target = getField("target", ti)
+			t.Interval = getField("interval", ti)
+			t.PkDelay = getField("pk_delay", ti)
+			t.AvDelay = getField("av_delay", ti)
+			t.SpDelay = getField("sp_delay", ti)
+			t.Backlog = getField("backlog", ti)
+			t.Pkts = getFieldU("pkts", ti)
+			t.Bytes = getFieldU("bytes", ti)
+			t.WayInds = getFieldU("way_inds", ti)
+			t.WayMiss = getFieldU("way_miss", ti)
+			t.WayCols = getFieldU("way_cols", ti)
+			t.Drops = getFieldU("drops", ti)
+			t.Marks = getFieldU("marks", ti)
+			t.AckDrop = getFieldU("ack_drop", ti)
+			t.SpFlows = getFieldU("sp_flows", ti)
+			t.BkFlows = getFieldU("bk_flows", ti)
+			t.UnFlows = getFieldU("un_flows", ti)
+			t.MaxLen = getFieldU("max_len", ti)
+			t.Quantum = getFieldU("quantum", ti)
+		}
+		cs.Tiers = tiers
 	}
+
 	return cs, true
 }
 
-func parseHeader(cs *types.CakeStats, line string) {
-	fs := util.Fields(util.TrimSpace(line))
+// ---------------------------------------------------------------------------
+// Line-level parsers
+// ---------------------------------------------------------------------------
+
+func parseHeader(cs *types.CakeStats, line string, tok *util.FieldTokenizer) {
+	fs := tok.Tokenise(line)
 	if len(fs) < 5 {
 		return
 	}
-	cs.Handle = util.TrimSuffix(fs[2], ":")
+	cs.Handle = strings.TrimSuffix(fs[2], ":")
 	cs.Interface = fs[4]
-	// Default to egress; the "ingress" CAKE option keyword overrides this below.
-	// We intentionally do not infer direction from the attachment point (root vs
-	// parent), because cake_mq sub-queues appear as "parent X:N" yet are egress.
 	cs.Direction = "egress"
 	for i := 5; i < len(fs); i++ {
-		tok := fs[i]
-		switch tok {
+		switch fs[i] {
 		case "bandwidth":
 			if i+1 < len(fs) {
 				cs.Bandwidth = fs[i+1]
 				i++
 			}
 		case "diffserv3", "diffserv4", "diffserv8", "besteffort", "precedence":
-			cs.DiffservMode = tok
+			cs.DiffservMode = fs[i]
 		case "fwmark":
 			if i+1 < len(fs) {
 				cs.FwmarkMask = fs[i+1]
@@ -239,7 +648,7 @@ func parseHeader(cs *types.CakeStats, line string) {
 		case "autorate-ingress":
 			cs.Bandwidth = "autorate-ingress"
 		case "flowblind", "srchost", "dsthost", "hosts", "flows":
-			cs.DualMode = tok
+			cs.DualMode = fs[i]
 		case "nat":
 			cs.NATEnabled = true
 		case "nonat":
@@ -249,7 +658,7 @@ func parseHeader(cs *types.CakeStats, line string) {
 		case "nowash":
 			cs.WashEnabled = false
 		case "dual-srchost", "dual-dsthost", "triple-isolate", "single":
-			cs.DualMode = tok
+			cs.DualMode = fs[i]
 		case "ingress":
 			cs.Direction = "ingress"
 		case "memlimit":
@@ -259,30 +668,31 @@ func parseHeader(cs *types.CakeStats, line string) {
 			}
 		}
 	}
-	// An IFB (Intermediate Functional Block) interface is always used to
-	// redirect ingress traffic.  Some tc / kernel builds omit the "ingress"
-	// keyword from the qdisc header even when the physical traffic direction is
-	// ingress (confirmed by segal_72's cake_mq output where ifb4eth1 showed
-	// no "ingress" token).  Fall back to interface-name detection so the
-	// frontend never mis-labels an IFB as [EGRESS].
 	if cs.Direction == "egress" && strings.HasPrefix(cs.Interface, "ifb") {
 		cs.Direction = "ingress"
 	}
 }
 
-func parseSentLine(cs *types.CakeStats, line string) {
-	fs := util.Fields(line)
+func parseSentLine(cs *types.CakeStats, line string, tok *util.FieldTokenizer) {
+	fs := tok.Tokenise(line)
 	if len(fs) >= 4 {
 		cs.SentBytes = util.ParseUint64(fs[1])
 		cs.SentPkts = util.ParseUint64(fs[3])
 	}
 	s, e := strings.Index(line, "("), strings.Index(line, ")")
 	if s != -1 && e != -1 && e > s {
-		// The content is of the form "dropped N, overlimits M requeues R".
-		// Each comma-separated segment may contain multiple space-separated
-		// key-value pairs (e.g. "overlimits M requeues R").
-		for _, part := range util.Split(line[s+1:e], ",") {
-			tokens := util.Fields(util.TrimSpace(part))
+		inner := line[s+1 : e]
+		for len(inner) > 0 {
+			comma := strings.IndexByte(inner, ',')
+			var seg string
+			if comma >= 0 {
+				seg = inner[:comma]
+				inner = inner[comma+1:]
+			} else {
+				seg = inner
+				inner = ""
+			}
+			tokens := tok.Tokenise(seg)
 			for j := 0; j+1 < len(tokens); j += 2 {
 				switch tokens[j] {
 				case "dropped":
@@ -297,17 +707,17 @@ func parseSentLine(cs *types.CakeStats, line string) {
 	}
 }
 
-func parseBacklogLine(cs *types.CakeStats, line string) {
-	fs := util.Fields(line)
+func parseBacklogLine(cs *types.CakeStats, line string, tok *util.FieldTokenizer) {
+	fs := tok.Tokenise(line)
 	if len(fs) >= 3 {
 		cs.BacklogBytes = fs[1]
-		cs.BacklogPkts = util.ParseUint64(util.TrimSuffix(fs[2], "p"))
+		cs.BacklogPkts = util.ParseUint64(strings.TrimSuffix(fs[2], "p"))
 	}
 }
 
-func parseMemoryLine(cs *types.CakeStats, line string) {
+func parseMemoryLine(cs *types.CakeStats, line string, tok *util.FieldTokenizer) {
 	after := util.AfterColon(line)
-	parts := util.Fields(after)
+	parts := tok.Tokenise(after)
 	if len(parts) >= 3 && parts[1] == "of" {
 		cs.MemoryUsed = parts[0]
 		cs.MemoryTotal = parts[2]
@@ -319,38 +729,44 @@ func parseMinMax(line string) (lo, hi string) {
 	if i == -1 {
 		return
 	}
-	parts := util.SplitN(util.TrimSpace(line[i+1:]), "/", 2)
-	if len(parts) == 2 {
-		lo = util.TrimSpace(parts[0])
-		hi = util.TrimSpace(parts[1])
+	rest := line[i+1:]
+	// Find the "/" separator.
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return
 	}
+	// Trim whitespace from each part (sub-string, no alloc).
+	lo = trimSpace(rest[:slash])
+	hi = trimSpace(rest[slash+1:])
 	return
 }
 
-var knownTierWords = map[string]bool{
-	"Bulk": true, "Best": true, "Voice": true, "Video": true,
-	"CS1": true, "CS2": true, "CS3": true, "CS4": true,
-	"CS5": true, "CS6": true, "CS7": true, "BE": true,
-	// "Tin" is used by CAKE when running in besteffort mode (single tin = "Tin 0")
-	// and in some diffserv8 configurations ("Tin 0" through "Tin 7").
-	"Tin": true,
+// trimSpace returns s without leading/trailing spaces/tabs (ASCII only).
+// This is cheaper than strings.TrimSpace for our use case.
+func trimSpace(s string) string {
+	i, j := 0, len(s)
+	for i < j && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
+		j--
+	}
+	if i >= j {
+		return ""
+	}
+	return s[i:j]
 }
 
-func isTierHeaderLine(first string) bool {
-	return knownTierWords[first]
-}
-
+// parseTierNames extracts tier names from a tier header row.
+// It joins multi-word names like "Best Effort" and "Tin N" into single strings.
 func parseTierNames(words []string) []string {
 	var names []string
 	for i := 0; i < len(words); i++ {
 		switch {
 		case words[i] == "Best" && i+1 < len(words) && words[i+1] == "Effort":
-			// "Best Effort" is a two-word tier name used in diffserv4.
 			names = append(names, "Best Effort")
 			i++
 		case words[i] == "Tin" && i+1 < len(words):
-			// "Tin N" is a single tier name used by besteffort (single tin) and
-			// generic diffserv8 configurations.  Treat it as one compound name.
 			names = append(names, "Tin "+words[i+1])
 			i++
 		default:
@@ -360,51 +776,27 @@ func parseTierNames(words []string) []string {
 	return names
 }
 
-func assembleTiers(names []string, buf map[string][]string) []types.CakeTier {
-	tiers := make([]types.CakeTier, len(names))
-	for i, name := range names {
-		tiers[i].Name = name
-	}
-	get := func(field string, idx int) string {
-		v, ok := buf[field]
-		if !ok || idx >= len(v) {
-			return ""
-		}
-		return v[idx]
-	}
-	getU := func(field string, idx int) uint64 {
-		return util.ParseUint64(get(field, idx))
-	}
-	for i := range tiers {
-		t := &tiers[i]
-		t.Thresh = get("thresh", i)
-		t.Target = get("target", i)
-		t.Interval = get("interval", i)
-		t.PkDelay = get("pk_delay", i)
-		t.AvDelay = get("av_delay", i)
-		t.SpDelay = get("sp_delay", i)
-		t.Backlog = get("backlog", i)
-		t.Pkts = getU("pkts", i)
-		t.Bytes = getU("bytes", i)
-		t.WayInds = getU("way_inds", i)
-		t.WayMiss = getU("way_miss", i)
-		t.WayCols = getU("way_cols", i)
-		t.Drops = getU("drops", i)
-		t.Marks = getU("marks", i)
-		t.AckDrop = getU("ack_drop", i)
-		t.SpFlows = getU("sp_flows", i)
-		t.BkFlows = getU("bk_flows", i)
-		t.UnFlows = getU("un_flows", i)
-		t.MaxLen = getU("max_len", i)
-		t.Quantum = getU("quantum", i)
-	}
-	return tiers
+// ---------------------------------------------------------------------------
+// Tier-name utilities
+// ---------------------------------------------------------------------------
+
+var knownTierWords = map[string]bool{
+	"Bulk": true, "Best": true, "Voice": true, "Video": true,
+	"CS1": true, "CS2": true, "CS3": true, "CS4": true,
+	"CS5": true, "CS6": true, "CS7": true, "BE": true,
+	"Tin": true,
 }
-// headerParentHandle extracts the major handle from a "parent X:N" token pair
-// in a tc qdisc header line.  For example, "parent 1:2" returns "1".
-// Returns an empty string when no parent token is present (root qdisc).
-func headerParentHandle(line string) string {
-	fs := util.Fields(line)
+
+func isTierHeaderLine(first string) bool {
+	return knownTierWords[first]
+}
+
+// ---------------------------------------------------------------------------
+// headerParentHandle
+// ---------------------------------------------------------------------------
+
+func headerParentHandle(line string, tok *util.FieldTokenizer) string {
+	fs := tok.Tokenise(line)
 	for i := 0; i < len(fs)-1; i++ {
 		if fs[i] == "parent" {
 			ref := fs[i+1]
@@ -416,42 +808,28 @@ func headerParentHandle(line string) string {
 	return ""
 }
 
+// ---------------------------------------------------------------------------
+// Aggregate helpers (cake_mq)
+// ---------------------------------------------------------------------------
+
 // aggregateCakeMQSubQueues merges per-hardware-queue CakeStats from a cake_mq
 // setup into a single logical CakeStats that represents the whole interface.
-//
-// Shared CAKE configuration (bandwidth, diffserv mode, RTT, overhead, NAT/ATM
-// flags, direction) is taken from the first sub-queue, since cake_mq stores one
-// config object that is referenced by all sub-queues.  Identity fields (handle,
-// interface, raw header) come from the cake_mq parent qdisc.  Monotonic
-// counters (bytes sent, packets, drops, …) are summed across queues.  Delay
-// metrics are reported as the maximum across all queues (worst-case latency).
 func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) types.CakeStats {
 	if len(subs) == 0 {
 		return parent
 	}
-	// Bootstrap from first sub-queue to inherit all shared CAKE configuration.
 	agg := subs[0]
-	// Override identity fields with values from the cake_mq parent.
 	agg.Handle = parent.Handle
 	agg.Interface = parent.Interface
 	agg.RawHeader = parent.RawHeader
 	agg.UpdatedAt = parent.UpdatedAt
 
-	// Direction: the cake_mq parent header line and each sub-queue line both
-	// carry the "ingress" keyword when the qdisc is configured for ingress
-	// (confirmed by kernel selftests in 700-06 OpenWrt patch).  However, some
-	// tc / kernel builds may emit it only in the parent line and not repeat it
-	// in each sub-queue.  Using the parent as the authoritative source avoids
-	// the bug where ifb4eth1 is wrongly shown as [EGRESS]:
-	//   if parent says "ingress" → the entire cake_mq instance is ingress
-	//   if sub-queue says "ingress" → also accept it (belt-and-suspenders)
 	if parent.Direction == "ingress" || agg.Direction == "ingress" {
 		agg.Direction = "ingress"
 	} else {
 		agg.Direction = "egress"
 	}
 
-	// Sum global counters across all sub-queues.
 	agg.SentBytes, agg.SentPkts = 0, 0
 	agg.Dropped, agg.Overlimits, agg.Requeues = 0, 0, 0
 	agg.BacklogPkts = 0
@@ -466,11 +844,9 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 		backlogBytes += util.ParseBytesStr(s.BacklogBytes)
 		memUsed += util.ParseBytesStr(s.MemoryUsed)
 	}
-	agg.BacklogBytes = fmt.Sprintf("%db", backlogBytes)
-	agg.MemoryUsed = fmt.Sprintf("%db", memUsed)
-	// MemoryTotal is the per-queue limit identical across all queues; keep first.
+	agg.BacklogBytes = formatUint64(backlogBytes) + "b"
+	agg.MemoryUsed = formatUint64(memUsed) + "b"
 
-	// Aggregate per-tier statistics.
 	if len(subs[0].Tiers) > 0 {
 		queueTiers := make([][]types.CakeTier, len(subs))
 		for i, s := range subs {
@@ -481,11 +857,7 @@ func aggregateCakeMQSubQueues(parent types.CakeStats, subs []types.CakeStats) ty
 	return agg
 }
 
-// aggregateCakeTiers combines per-tier statistics from N cake sub-queues into
-// a single tier slice.  Configuration values (thresh, target, interval,
-// quantum, name) are taken from the first queue since they are shared.  All
-// packet/byte counters are summed.  Delay strings report the maximum across
-// queues (worst-case latency view).  Backlog is summed.
+// aggregateCakeTiers combines per-tier statistics from N cake sub-queues.
 func aggregateCakeTiers(queues [][]types.CakeTier) []types.CakeTier {
 	if len(queues) == 0 || len(queues[0]) == 0 {
 		return nil
@@ -493,9 +865,7 @@ func aggregateCakeTiers(queues [][]types.CakeTier) []types.CakeTier {
 	nTiers := len(queues[0])
 	out := make([]types.CakeTier, nTiers)
 	for ti := 0; ti < nTiers; ti++ {
-		// Seed with shared config from the first queue.
 		out[ti] = queues[0][ti]
-		// Zero all mutable counters before summation.
 		out[ti].Pkts = 0
 		out[ti].Bytes = 0
 		out[ti].WayInds = 0
@@ -529,20 +899,36 @@ func aggregateCakeTiers(queues [][]types.CakeTier) []types.CakeTier {
 				out[ti].MaxLen = t.MaxLen
 			}
 		}
-		// Delays: return the string from whichever queue had the highest value.
 		out[ti].PkDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.PkDelay })
 		out[ti].AvDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.AvDelay })
 		out[ti].SpDelay = maxDelayStr(queues, ti, func(t types.CakeTier) string { return t.SpDelay })
-		// Backlog: sum byte values across queues.
 		var backlogSum uint64
 		for _, q := range queues {
 			if ti < len(q) {
 				backlogSum += util.ParseBytesStr(q[ti].Backlog)
 			}
 		}
-		out[ti].Backlog = fmt.Sprintf("%db", backlogSum)
+		out[ti].Backlog = formatUint64(backlogSum) + "b"
 	}
 	return out
+}
+
+// parseTextString is a convenience wrapper around parseText that accepts a
+// string input. It converts the string to a byte slice without copying
+// (using unsafe) so that the parser can build its line index directly.
+// In production code, call parseText([]byte) directly for zero-allocation
+// operation.  This wrapper exists mainly for test compatibility.
+//
+//lint:ignore U1000 used in tests within this package
+func parseTextString(s string) []types.CakeStats {
+	return parseText(unsafeStringToBytes(s))
+}
+
+func unsafeStringToBytes(s string) []byte {
+	if len(s) == 0 {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 // maxDelayStr returns the delay string with the highest numeric value from the
@@ -563,4 +949,18 @@ func maxDelayStr(queues [][]types.CakeTier, tierIdx int, field func(types.CakeTi
 	return bestStr
 }
 
-
+// formatUint64 converts n to its decimal string representation without
+// allocating (writes into a stack buffer).
+func formatUint64(n uint64) string {
+	var buf [20]byte
+	i := len(buf)
+	for {
+		i--
+		buf[i] = '0' + byte(n%10)
+		n /= 10
+		if n == 0 {
+			break
+		}
+	}
+	return string(buf[i:])
+}

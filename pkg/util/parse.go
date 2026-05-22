@@ -5,15 +5,40 @@ import (
 	"strings"
 )
 
+// trimUnitSuffixLen returns the length of the numeric prefix of s after
+// stripping any trailing unit-suffix characters (b, B, k, K, m, M, g, G, p, P)
+// that tc/iproute2 appends to counter values such as "1024b" or "42p".
+func trimUnitSuffixLen(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case 'b', 'B', 'k', 'K', 'm', 'M', 'g', 'G', 'p', 'P':
+		default:
+			return i + 1
+		}
+	}
+	return 0
+}
+
 // ParseUint64 converts a numeric string to uint64, stripping any trailing
 // byte/packet unit suffix characters (b, B, k, K, m, M, g, G, p, P) that
 // tc/iproute2 appends to counter values (e.g. "1024b", "42p", "5Mb").
 // Returns 0 for empty or non-numeric input; never panics.
+//
+// This is a hand-rolled parser that avoids the strconv.ParseUint
+// allocation (the error interface causes the result to escape).  On valid
+// input it performs zero heap allocations.
 func ParseUint64(s string) uint64 {
-	s = strings.TrimRight(s, "bBkKmMgGpP")
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
+	n := trimUnitSuffixLen(s)
+	if n == 0 {
 		return 0
+	}
+	var v uint64
+	for i := 0; i < n; i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0
+		}
+		v = v*10 + uint64(c-'0')
 	}
 	return v
 }
