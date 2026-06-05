@@ -74,8 +74,48 @@ check_deps() {
 
 # ---- Architecture detection -----------------------------------------------
 
+# Detect whether a "mips" or "mips64" system is little-endian.
+# Linux's uname -m always reports "mips" regardless of endianness, so we
+# need alternative signals.  Prints "le" for little-endian, or nothing (empty
+# string) for big-endian, matching the cake-stats release asset naming
+# convention (linux-mips vs linux-mipsle).
+detect_mips_endianness() {
+    # Layer 1: OpenWrt release file (covers >99% of MIPS router installations)
+    if [ -f /etc/openwrt_release ]; then
+        # DISTRIB_ARCH encodes endianness: mipsel_*, mips64el_* = little-endian
+        local dist_arch
+        dist_arch=$(grep '^DISTRIB_ARCH=' /etc/openwrt_release 2>/dev/null | head -1 | cut -d"'" -f2)
+        case "$dist_arch" in
+            mipsel*|mips64el*) echo "le"; return ;;
+            mips*|mips64*)     return ;;   # big-endian; print nothing
+        esac
+    fi
+
+    # Layer 2: /proc/cpuinfo — some MIPS kernels expose a "byte order" field
+    if [ -r /proc/cpuinfo ]; then
+        local order
+        order=$(grep -i 'byte order' /proc/cpuinfo 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+        case "$order" in
+            *little*) echo "le"; return ;;
+            *big*)    return ;;
+        esac
+    fi
+
+    # Layer 3: readelf on a known ELF binary — authoritative when available
+    if command -v readelf >/dev/null 2>&1 && [ -r /bin/sh ]; then
+        if readelf -h /bin/sh 2>/dev/null | grep -qi 'little endian'; then
+            echo "le"; return
+        elif readelf -h /bin/sh 2>/dev/null | grep -qi 'big endian'; then
+            return
+        fi
+    fi
+
+    # Layer 4: fallback — default to big-endian (historical convention).
+    # Prints nothing, so the caller gets "linux-mips" / "linux-mips64".
+}
+
 detect_arch() {
-    local arch
+    local arch suffix
     arch=$(uname -m)
     case "$arch" in
         x86_64)           echo "linux-amd64" ;;
@@ -83,9 +123,13 @@ detect_arch() {
         armv7l)           echo "linux-armv7" ;;
         armv6l)           echo "linux-armv6" ;;
         i386|i686)        echo "linux-386" ;;
-        mips)             echo "linux-mips" ;;
+        mips)
+            suffix=$(detect_mips_endianness)
+            echo "linux-mips${suffix}" ;;
         mipsel|mipsle)    echo "linux-mipsle" ;;
-        mips64)           echo "linux-mips64" ;;
+        mips64)
+            suffix=$(detect_mips_endianness)
+            echo "linux-mips64${suffix}" ;;
         mips64el|mips64le)echo "linux-mips64le" ;;
         *)
             log_error "Unsupported architecture: $arch"
